@@ -18,7 +18,8 @@ from . import render as R
 def build_ir(hero_path: str, transcript: dict, *, title: str = "short",
              bgm_path: str | None = None, focus_y: float = 0.4,
              max_gap_us: int = 450000) -> dict:
-    """Assemble a validated IR for a talking-head short (no rendering)."""
+    """Assemble the base IR for a talking-head short (main track + captions + bgm).
+    Overlays (b-roll/logo) are added afterwards via edit.add_broll / add_logo."""
     aid, asset = P.ingest(hero_path, "hero")
     doc = I.new_ir(title=title)
     fps = asset.get("probe", {}).get("fps")
@@ -39,13 +40,11 @@ def build_ir(hero_path: str, transcript: dict, *, title: str = "short",
     return doc
 
 
-def build_short(hero_path: str, transcript: dict, out_dir: str, *,
-                title: str = "short", bgm_path: str | None = None,
-                focus_y: float = 0.4, proxy: bool = True) -> dict:
-    """Full pipeline. Returns {ir, report, receipts, paths}."""
+def render_doc(doc: dict, out_dir: str, *, proxy: bool = True) -> dict:
+    """Validate, persist the IR, and render (final + optional proxy). Returns
+    {ir, report, receipts, paths}."""
     os.makedirs(out_dir, exist_ok=True)
-    doc = build_ir(hero_path, transcript, title=title, bgm_path=bgm_path, focus_y=focus_y)
-
+    E.derive(doc)
     report = V.validate(doc)
     ir_path = os.path.join(out_dir, "timeline.ir.json")
     I.dump(doc, ir_path)
@@ -61,5 +60,13 @@ def build_short(hero_path: str, transcript: dict, out_dir: str, *,
         proxy_path = os.path.join(out_dir, "preview.mp4")
         receipts["preview"] = R.render(doc, proxy_path, proxy=True)
         paths["preview"] = proxy_path
-
     return {"ir": doc, "report": report, "receipts": receipts, "paths": paths}
+
+
+def build_short(hero_path: str, transcript: dict, out_dir: str, *,
+                title: str = "short", bgm_path: str | None = None,
+                focus_y: float = 0.4, proxy: bool = True) -> dict:
+    """Full core pipeline (no overlays). For b-roll/logo, use build_ir + add_* +
+    render_doc, as the demo does."""
+    doc = build_ir(hero_path, transcript, title=title, bgm_path=bgm_path, focus_y=focus_y)
+    return render_doc(doc, out_dir, proxy=proxy)

@@ -128,6 +128,58 @@ def caption_track_of(ir: dict) -> dict | None:
     return None
 
 
+# --------------------------------------------------------------- overlays (b-roll / logo)
+def broll_tracks(ir: dict) -> list[dict]:
+    return [t for t in ir["tracks"]
+            if t.get("kind") in ("video", "image") and t.get("role") == "broll"]
+
+
+def logo_clip_of(ir: dict) -> dict | None:
+    for t in ir["tracks"]:
+        if t.get("role") == "logo" and t.get("clips"):
+            return t["clips"][0]
+    return None
+
+
+def add_broll(ir: dict, asset_id: str, source_at_us: int, source_end_us: int,
+              **kw) -> dict:
+    """Add a source-anchored b-roll cutaway over the speech window."""
+    I.ensure_track(ir, "brollTrack", "video", role="broll")
+    track = I.get_track(ir, "brollTrack")
+    clip = I.broll_clip(asset_id, source_at_us, source_end_us, **kw)
+    track["clips"].append(clip)
+    return clip
+
+
+def add_logo(ir: dict, asset_id: str, **kw) -> dict:
+    """Set (single) program-anchored corner logo/watermark."""
+    I.ensure_track(ir, "logoTrack", "image", role="logo")
+    track = I.get_track(ir, "logoTrack")
+    track["clips"] = [I.logo_clip(asset_id, **kw)]
+    return track["clips"][0]
+
+
+def resolve_broll_windows(ir: dict) -> list[dict]:
+    """Map each source-anchored b-roll clip to program time via the cut-map.
+    Returns [{clip, asset, progStartUs, progEndUs}]; clips fully inside a cut
+    are dropped."""
+    cmap = build_cut_map(ir)
+    out: list[dict] = []
+    for t in broll_tracks(ir):
+        for clip in t["clips"]:
+            ps = source_to_program(cmap, clip["sourceAtUs"])
+            pe = source_to_program(cmap, max(clip["sourceAtUs"], clip["sourceEndUs"] - 1))
+            if ps is None:
+                continue
+            if pe is None:
+                pe = ps + (clip["sourceEndUs"] - clip["sourceAtUs"])
+            else:
+                pe += 1
+            out.append({"clip": clip, "asset": clip["asset"],
+                        "progStartUs": ps, "progEndUs": pe})
+    return out
+
+
 def resolve_caption_events(ir: dict) -> list[dict]:
     """Map source-anchored caption words to program time via the cut-map.
     Returns render-ready events: {progAtUs, progEndUs, lineWords:[...], activeIdx}

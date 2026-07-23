@@ -185,6 +185,47 @@ def bgm_clip(asset: str, gain_db: float = -18.0, source_start_us: int = 0,
     return clip
 
 
+def broll_clip(asset: str, source_at_us: int, source_end_us: int,
+               broll_start_us: int = 0, broll_end_us: int | None = None,
+               reframe_mode: str = "cover", focus_x: float = 0.5, focus_y: float = 0.5,
+               audio_underneath: bool = True, fade_in_us: int = 150000,
+               fade_out_us: int = 150000, clip_id: str | None = None) -> dict:
+    """A source-anchored b-roll cutaway: it covers the frame over the speech
+    window [source_at_us, source_end_us) (mapped to program time via the cut-map),
+    while the talking-head audio keeps playing underneath."""
+    span = source_end_us - source_at_us
+    return {
+        "id": clip_id or new_id("b"),
+        "asset": asset,
+        "anchor": "source",
+        "sourceAtUs": int(source_at_us),
+        "sourceEndUs": int(source_end_us),
+        "source": {"startUs": int(broll_start_us),
+                   "endUs": int(broll_end_us if broll_end_us is not None else broll_start_us + span)},
+        "reframe": {"mode": reframe_mode, "focusX": focus_x, "focusY": focus_y},
+        "transform": {"scale": 1.0, "x": 0, "y": 0, "opacity": 1.0},
+        "audioUnderneath": bool(audio_underneath),
+        "fadeInUs": int(fade_in_us),
+        "fadeOutUs": int(fade_out_us),
+        "keyframes": [],
+    }
+
+
+def logo_clip(asset: str, corner: str = "top-right", scale: float = 0.16,
+              opacity: float = 0.9, margin_px: int = 48, clip_id: str | None = None) -> dict:
+    """A persistent, program-anchored corner watermark for the whole program."""
+    return {
+        "id": clip_id or new_id("lg"),
+        "asset": asset,
+        "anchor": "program",
+        "atUs": 0,
+        "endUs": WHOLE_PROGRAM,
+        "corner": corner,          # top-left | top-right | bottom-left | bottom-right
+        "marginPx": int(margin_px),
+        "transform": {"scale": float(scale), "opacity": float(opacity)},
+    }
+
+
 # ------------------------------------------------------------------ io
 def load(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as fh:

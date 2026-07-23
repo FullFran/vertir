@@ -188,17 +188,27 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     E.derive(ir)
     events = E.resolve_caption_events(ir)
 
+    broll_windows = E.resolve_broll_windows(ir)
+    logo = E.logo_clip_of(ir)
+
     used: list[str] = []
+
+    def _use(aid: str) -> None:
+        if aid not in used:
+            used.append(aid)
+
     for c in clips:
-        if c["asset"] not in used:
-            used.append(c["asset"])
+        _use(c["asset"])
     bgm = None
     for t in ir["tracks"]:
         if t.get("kind") == "audio" and t.get("role") == "bgm" and t.get("clips"):
             bgm = t["clips"][0]
-            if bgm["asset"] not in used:
-                used.append(bgm["asset"])
+            _use(bgm["asset"])
             break
+    for bw in broll_windows:
+        _use(bw["asset"])
+    if logo:
+        _use(logo["asset"])
     input_index = {aid: i for i, aid in enumerate(used)}
 
     args: list[str] = ["ffmpeg", "-y", "-hide_banner", "-nostdin"]
@@ -232,22 +242,58 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     fc.append("".join(vlabels) + f"concat=n={n}:v=1:a=0[vcat]")
     fc.append("".join(alabels) + f"concat=n={n}:v=0:a=1[speech]")
 
-    # captions
-    vlast = "[vcat]"
+    # video compositing chain: main -> b-roll -> captions -> logo
+    scale_f = cw / proj["canvas"]["w"]
+    vin = "[vcat]"
     ass_text = ""
+
+    # b-roll cutaways (source-anchored, under captions; audio stays underneath)
+    for k, bw in enumerate(broll_windows):
+        idx = input_index[bw["asset"]]
+        clip = bw["clip"]
+        ps_s, pe_s = _us_to_s(bw["progStartUs"]), _us_to_s(bw["progEndUs"])
+        rf = clip.get("reframe", {"mode": "cover", "focusX": 0.5, "focusY": 0.5})
+        vf = reframe_filter(rf.get("mode", "cover"), cw, ch, rf.get("focusX", 0.5), rf.get("focusY", 0.5))
+        if assets[bw["asset"]].get("kind") == "image":
+            fc.append(f"[{idx}:v]{vf},format=yuv420p[bpre{k}]")
+            fc.append(f"{vin}[bpre{k}]overlay=0:0:eof_action=repeat:"
+                      f"enable='between(t,{ps_s},{pe_s})'[vb{k}]")
+        else:
+            s, e = _us_to_s(clip["source"]["startUs"]), _us_to_s(clip["source"]["endUs"])
+            shift = bw["progStartUs"] / 1_000_000
+            fc.append(f"[{idx}:v]trim=start={s}:end={e},setpts=PTS-STARTPTS+{shift:.6f}/TB,"
+                      f"{vf},format=yuv420p[bpre{k}]")
+            fc.append(f"{vin}[bpre{k}]overlay=0:0:eof_action=pass:"
+                      f"enable='between(t,{ps_s},{pe_s})'[vb{k}]")
+        vin = f"[vb{k}]"
+
+    # captions
     if caption_overlays:
-        vin = "[vcat]"
         for k, ov in enumerate(caption_overlays):
             j = cap_base + k
-            lbl = f"[vc{k}]"
             fc.append(f"{vin}[{j}:v]overlay=(W-w)/2:(H*{_ypct(ir):.4f})-h/2:"
-                      f"enable='between(t,{_us_to_s(ov['startUs'])},{_us_to_s(ov['endUs'])})'{lbl}")
-            vin = lbl
-        vlast = vin
+                      f"enable='between(t,{_us_to_s(ov['startUs'])},{_us_to_s(ov['endUs'])})'[vc{k}]")
+            vin = f"[vc{k}]"
     elif events and ass_path:
         ass_text = generate_ass(ir, events, cw, ch)
-        fc.append(f"[vcat]subtitles=filename='{_sub_escape(ass_path)}'[vsub]")
-        vlast = "[vsub]"
+        fc.append(f"{vin}subtitles=filename='{_sub_escape(ass_path)}'[vsub]")
+        vin = "[vsub]"
+
+    # logo / watermark (program-anchored corner, top-most)
+    if logo:
+        lidx = input_index[logo["asset"]]
+        tr = logo.get("transform", {})
+        logo_w = max(2, int(round(tr.get("scale", 0.16) * cw)))
+        opacity = tr.get("opacity", 0.9)
+        m = max(0, int(round(logo.get("marginPx", 48) * scale_f)))
+        pos = {"top-left": f"{m}:{m}", "top-right": f"W-w-{m}:{m}",
+               "bottom-left": f"{m}:H-h-{m}", "bottom-right": f"W-w-{m}:H-h-{m}"}.get(
+                   logo.get("corner", "top-right"), f"W-w-{m}:{m}")
+        fc.append(f"[{lidx}:v]scale={logo_w}:-1,format=rgba,colorchannelmixer=aa={opacity}[logo]")
+        fc.append(f"{vin}[logo]overlay={pos}:eof_action=repeat[vlogo]")
+        vin = "[vlogo]"
+
+    vlast = vin
 
     # audio: bgm mix (static gain in core; ducking materialized later) + loudness
     alast = "[speech]"

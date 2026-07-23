@@ -135,4 +135,41 @@ def validate(ir: dict) -> dict:
                 if c.get(f, 0) < 0:
                     r.err("fade", f"{f} must be >= 0", c.get("id", t["id"]))
 
+    # overlays: b-roll (source-anchored) + logo (program-anchored)
+    for t in ir.get("tracks", []):
+        role = t.get("role")
+        if role == "broll":
+            for c in t.get("clips", []):
+                a = assets.get(c.get("asset"))
+                if a is None:
+                    r.err("missing-asset", f"b-roll {c.get('id')} references unknown asset {c.get('asset')!r}", t["id"])
+                    continue
+                if not (_is_int(c.get("sourceAtUs")) and _is_int(c.get("sourceEndUs"))
+                        and c["sourceAtUs"] < c["sourceEndUs"]):
+                    r.err("broll-anchor", f"b-roll {c.get('id')} has invalid source anchor", c.get("id"))
+                src = c.get("source", {})
+                dur = a.get("probe", {}).get("durationUs")
+                if a.get("kind") != "image" and _interval_ok(src) and dur is not None and src["endUs"] > dur:
+                    r.err("broll-source-oob", f"b-roll {c.get('id')} source exceeds asset duration", c.get("id"))
+        elif role == "logo":
+            for c in t.get("clips", []):
+                a = assets.get(c.get("asset"))
+                if a is None:
+                    r.err("missing-asset", f"logo references unknown asset {c.get('asset')!r}", t["id"])
+                    continue
+                if a.get("kind") != "image":
+                    r.warn("logo-kind", f"logo asset {c.get('asset')!r} is not an image", t["id"])
+                tr = c.get("transform", {})
+                if not (0 < tr.get("scale", 0.16) <= 1):
+                    r.warn("logo-scale", "logo scale should be in (0,1]", c.get("id"))
+                if not (0 <= tr.get("opacity", 0.9) <= 1):
+                    r.warn("logo-opacity", "logo opacity should be in [0,1]", c.get("id"))
+
+    resolved = {bw["clip"]["id"] for bw in E.resolve_broll_windows(ir)}
+    for t in ir.get("tracks", []):
+        if t.get("role") == "broll":
+            for c in t.get("clips", []):
+                if c.get("id") not in resolved:
+                    r.warn("broll-in-cut", f"b-roll {c.get('id')} falls entirely in a cut; will not show", t["id"])
+
     return r.to_dict()
