@@ -1,0 +1,25 @@
+[project]
+name = "vertir"
+version = "0.1.0"
+description = "AI-first vertical (9:16) video editor engine — the LLM plans, a deterministic FFmpeg renderer executes."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []  # core is stdlib + ffmpeg only, by design
+
+[project.scripts]
+vertir = "vertir.cli:main"
+
+[project.optional-dependencies]
+# Optional adapters (not required for the core pipeline):
+#   whisper = local Whisper.cpp transcription (invoked as a subprocess)
+dev = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vertir", "vertir.web"]
+
+[tool.setuptools.package-data]
+"vertir.web" = ["static/*"]
