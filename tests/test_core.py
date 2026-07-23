@@ -162,5 +162,56 @@ class TestRenderCommand(unittest.TestCase):
         self.assertIn("crop=1080:1920", f)
 
 
+def overlay_ir():
+    doc = sample_ir()
+    doc["assets"]["broll1"] = {"sha256": "y", "path": "/tmp/b.mp4", "kind": "video",
+                               "probe": {"durationUs": 5_000_000, "hasAudio": False}}
+    doc["assets"]["logo"] = {"sha256": "z", "path": "/tmp/logo.png", "kind": "image",
+                             "probe": {"w": 200, "h": 200}}
+    tx = T.normalize({"words": [
+        {"sourceAtUs": 1_000_000, "sourceEndUs": 2_000_000, "text": "hola"},
+        {"sourceAtUs": 2_100_000, "sourceEndUs": 3_000_000, "text": "mundo"},
+    ]})
+    E.cut_fillers(doc, tx, "hero", pad_us=0)
+    return doc
+
+
+class TestOverlays(unittest.TestCase):
+    def test_add_broll_resolves_to_program_time(self):
+        doc = overlay_ir()
+        E.add_broll(doc, "broll1", 1_500_000, 2_500_000, broll_start_us=0, broll_end_us=1_000_000)
+        wins = E.resolve_broll_windows(doc)
+        self.assertEqual(len(wins), 1)
+        self.assertIsNotNone(wins[0]["progStartUs"])
+        self.assertTrue(V.validate(doc)["ok"], V.validate(doc))
+
+    def test_broll_fully_in_cut_warns(self):
+        doc = overlay_ir()
+        # 4.0s-4.5s is in the cut gap between the two kept words -> no window
+        E.add_broll(doc, "broll1", 4_000_000, 4_500_000, broll_start_us=0, broll_end_us=500_000)
+        self.assertEqual(len(E.resolve_broll_windows(doc)), 0)
+        rep = V.validate(doc)
+        self.assertTrue(any(w["code"] == "broll-in-cut" for w in rep["warnings"]))
+
+    def test_add_logo_valid(self):
+        doc = overlay_ir()
+        E.add_logo(doc, "logo", corner="bottom-left", scale=0.2, opacity=0.8)
+        self.assertIsNotNone(E.logo_clip_of(doc))
+        self.assertTrue(V.validate(doc)["ok"])
+
+    def test_build_command_composites_broll_and_logo(self):
+        doc = overlay_ir()
+        E.add_broll(doc, "broll1", 1_500_000, 2_500_000, broll_start_us=0, broll_end_us=1_000_000)
+        E.add_logo(doc, "logo", corner="top-right", scale=0.15, opacity=0.9)
+        built = R.build_command(doc, "/tmp/out.mp4")
+        fc = built["args"][built["args"].index("-filter_complex") + 1]
+        self.assertIn("[bpre0]", fc)            # b-roll prepared
+        self.assertIn("overlay=0:0", fc)        # b-roll composited over main
+        self.assertIn("colorchannelmixer=aa=0.9", fc)  # logo opacity
+        self.assertIn("[vlogo]", built["args"])  # final video label mapped
+        # each media asset became one ffmpeg input: hero + broll + logo (no bgm here)
+        self.assertEqual(built["args"].count("-i"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
