@@ -94,6 +94,13 @@ def source_to_program(cmap: list[dict], source_us: int) -> int | None:
     return None
 
 
+def _seg_containing(cmap: list[dict], source_us: int) -> dict | None:
+    for ent in cmap:
+        if ent["srcStartUs"] <= source_us < ent["srcEndUs"]:
+            return ent
+    return None
+
+
 # --------------------------------------------------------------- captions
 def captions_from_transcript(ir: dict, transcript: dict,
                              max_words_per_line: int | None = None,
@@ -172,7 +179,10 @@ def resolve_broll_windows(ir: dict) -> list[dict]:
             if ps is None:
                 continue
             if pe is None:
-                pe = ps + (clip["sourceEndUs"] - clip["sourceAtUs"])
+                # anchor end fell inside a cut: clamp to the kept content's end,
+                # never add the raw (partly-cut) span (would bleed past kept speech)
+                seg = _seg_containing(cmap, clip["sourceAtUs"])
+                pe = seg["progEndUs"] if seg else ps + (clip["sourceEndUs"] - clip["sourceAtUs"])
             else:
                 pe += 1
             out.append({"clip": clip, "asset": clip["asset"],
@@ -198,7 +208,8 @@ def resolve_caption_events(ir: dict) -> list[dict]:
             if ps is None:
                 continue
             if pe is None:
-                pe = ps + (w["sourceEndUs"] - w["sourceAtUs"])
+                seg = _seg_containing(cmap, w["sourceAtUs"])
+                pe = seg["progEndUs"] if seg else ps + (w["sourceEndUs"] - w["sourceAtUs"])
             else:
                 pe += 1
             pwords.append({"progAtUs": ps, "progEndUs": pe, "text": w["text"]})

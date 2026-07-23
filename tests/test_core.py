@@ -212,6 +212,29 @@ class TestOverlays(unittest.TestCase):
         # each media asset became one ffmpeg input: hero + broll + logo (no bgm here)
         self.assertEqual(built["args"].count("-i"), 3)
 
+    def test_broll_anchor_ending_in_cut_clamps_not_overshoots(self):
+        doc = sample_ir()
+        doc["assets"]["broll1"] = {"sha256": "y", "path": "/tmp/b.mp4", "kind": "video",
+                                   "probe": {"durationUs": 5_000_000, "hasAudio": False}}
+        tx = T.normalize({"words": [
+            {"sourceAtUs": 0, "sourceEndUs": 1_000_000, "text": "a"},          # segment A
+            {"sourceAtUs": 5_000_000, "sourceEndUs": 6_000_000, "text": "b"},  # segment B (cut between)
+        ]})
+        E.cut_fillers(doc, tx, "hero", pad_us=0)
+        # anchor starts in A (kept) but ends inside the removed [1s,5s) gap
+        E.add_broll(doc, "broll1", 500_000, 1_500_000, broll_start_us=0, broll_end_us=1_000_000)
+        w = E.resolve_broll_windows(doc)[0]
+        self.assertEqual(w["progStartUs"], 500_000)
+        self.assertEqual(w["progEndUs"], 1_000_000)  # clamped to A's end, NOT 1_500_000
+
+    def test_overlapping_broll_is_an_error(self):
+        doc = overlay_ir()  # one kept segment [1s,3s) -> program [0,2s)
+        E.add_broll(doc, "broll1", 1_200_000, 1_800_000, broll_start_us=0, broll_end_us=600_000)
+        E.add_broll(doc, "broll1", 1_500_000, 2_200_000, broll_start_us=0, broll_end_us=700_000)
+        rep = V.validate(doc)
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any(e["code"] == "broll-overlap" for e in rep["errors"]))
+
 
 if __name__ == "__main__":
     unittest.main()

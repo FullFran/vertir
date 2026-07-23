@@ -165,11 +165,29 @@ def validate(ir: dict) -> dict:
                 if not (0 <= tr.get("opacity", 0.9) <= 1):
                     r.warn("logo-opacity", "logo opacity should be in [0,1]", c.get("id"))
 
-    resolved = {bw["clip"]["id"] for bw in E.resolve_broll_windows(ir)}
+    wins = E.resolve_broll_windows(ir)
+    resolved = {w["clip"]["id"] for w in wins}
     for t in ir.get("tracks", []):
         if t.get("role") == "broll":
             for c in t.get("clips", []):
                 if c.get("id") not in resolved:
                     r.warn("broll-in-cut", f"b-roll {c.get('id')} falls entirely in a cut; will not show", t["id"])
+    # b-roll clips share one track -> intra-track non-overlap (program time)
+    swins = sorted(wins, key=lambda w: w["progStartUs"])
+    for i in range(1, len(swins)):
+        if swins[i]["progStartUs"] < swins[i - 1]["progEndUs"]:
+            r.err("broll-overlap",
+                  f"b-roll {swins[i]['clip']['id']} overlaps {swins[i - 1]['clip']['id']} in program time",
+                  "brollTrack")
+    # content vs window duration mismatch -> b-roll will freeze (short) or truncate (long)
+    for w in wins:
+        src = w["clip"].get("source", {})
+        if _is_int(src.get("startUs")) and _is_int(src.get("endUs")):
+            content = src["endUs"] - src["startUs"]
+            window = w["progEndUs"] - w["progStartUs"]
+            if abs(content - window) > 40000:
+                r.warn("broll-duration",
+                       f"b-roll {w['clip']['id']} content {content}us != window {window}us "
+                       "(will freeze or truncate)", w["clip"]["id"])
 
     return r.to_dict()

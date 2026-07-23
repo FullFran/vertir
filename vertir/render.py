@@ -255,16 +255,16 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         rf = clip.get("reframe", {"mode": "cover", "focusX": 0.5, "focusY": 0.5})
         vf = reframe_filter(rf.get("mode", "cover"), cw, ch, rf.get("focusX", 0.5), rf.get("focusY", 0.5))
         if assets[bw["asset"]].get("kind") == "image":
-            fc.append(f"[{idx}:v]{vf},format=yuv420p[bpre{k}]")
-            fc.append(f"{vin}[bpre{k}]overlay=0:0:eof_action=repeat:"
-                      f"enable='between(t,{ps_s},{pe_s})'[vb{k}]")
+            fc.append(f"[{idx}:v]{vf},setsar=1,format=yuv420p[bpre{k}]")
         else:
             s, e = _us_to_s(clip["source"]["startUs"]), _us_to_s(clip["source"]["endUs"])
             shift = bw["progStartUs"] / 1_000_000
             fc.append(f"[{idx}:v]trim=start={s}:end={e},setpts=PTS-STARTPTS+{shift:.6f}/TB,"
-                      f"{vf},format=yuv420p[bpre{k}]")
-            fc.append(f"{vin}[bpre{k}]overlay=0:0:eof_action=pass:"
-                      f"enable='between(t,{ps_s},{pe_s})'[vb{k}]")
+                      f"{vf},fps={fps_r},setsar=1,format=yuv420p[bpre{k}]")
+        # eof_action=repeat: if the b-roll runs out before the window ends, freeze
+        # its last frame rather than re-exposing the talking head mid-cutaway
+        fc.append(f"{vin}[bpre{k}]overlay=0:0:eof_action=repeat:"
+                  f"enable='between(t,{ps_s},{pe_s})'[vb{k}]")
         vin = f"[vb{k}]"
 
     # captions
@@ -283,7 +283,7 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     if logo:
         lidx = input_index[logo["asset"]]
         tr = logo.get("transform", {})
-        logo_w = max(2, int(round(tr.get("scale", 0.16) * cw)))
+        logo_w = max(2, min(cw, int(round(tr.get("scale", 0.16) * cw))))  # clamp: never wider than canvas
         opacity = tr.get("opacity", 0.9)
         m = max(0, int(round(logo.get("marginPx", 48) * scale_f)))
         pos = {"top-left": f"{m}:{m}", "top-right": f"W-w-{m}:{m}",
