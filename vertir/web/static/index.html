@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VertIR — tweaker</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0e0f13; --fg:#f3f4f6; --mut:#9aa0aa; --acc:#ffe000; --card:#1a1d24; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         display:flex; flex-direction:column; align-items:center; padding:16px; gap:16px; }
+  h1 { font-size:16px; margin:0; letter-spacing:.5px; }
+  .sub { color:var(--mut); font-size:12px; }
+  video { width:100%; max-width:340px; border-radius:14px; background:#000; aspect-ratio:9/16; }
+  .card { width:100%; max-width:420px; background:var(--card); border-radius:14px; padding:14px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
+  input[type=text] { width:100%; padding:9px 11px; border-radius:9px; border:1px solid #2a2e37;
+                     background:#0e0f13; color:var(--fg); font-size:14px; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  button { width:100%; padding:12px; border:0; border-radius:11px; background:var(--acc); color:#111;
+           font-weight:700; font-size:15px; cursor:pointer; margin-top:14px; }
+  button:disabled { opacity:.5; }
+  #status { font-size:13px; text-align:center; min-height:18px; }
+  .cap-row { margin-bottom:6px; }
+</style>
+</head>
+<body>
+  <h1>VertIR · tweaker</h1>
+  <div class="sub" id="meta">cargando…</div>
+  <video id="prev" controls playsinline muted></video>
+  <div class="card">
+    <div style="font-weight:600; margin-bottom:4px;">Subtítulos</div>
+    <div id="caps"></div>
+    <label>Volumen de la música: <span id="bgmv"></span> dB</label>
+    <input type="range" id="bgm" min="-40" max="0" step="1">
+    <button id="save">Guardar y re-renderizar</button>
+    <div id="status"></div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = null;
+
+function bust(url){ return url + "?t=" + Date.now(); }
+
+async function load(){
+  state = await (await fetch("/api/ir")).json();
+  const secs = ((state.durationUs||0)/1e6).toFixed(1);
+  $("#meta").textContent = "duración " + secs + "s · " + (state.captions.length) + " líneas";
+  const caps = $("#caps"); caps.innerHTML = "";
+  state.captions.forEach(c => {
+    const row = document.createElement("div"); row.className = "cap-row";
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = c.text; inp.dataset.i = c.i;
+    row.appendChild(inp); caps.appendChild(row);
+  });
+  if (state.bgmGainDb === null || state.bgmGainDb === undefined){
+    $("#bgm").disabled = true; $("#bgmv").textContent = "—";
+  } else {
+    $("#bgm").value = state.bgmGainDb; $("#bgmv").textContent = state.bgmGainDb;
+  }
+  $("#prev").src = bust("/preview.mp4");
+}
+
+$("#bgm").addEventListener("input", e => $("#bgmv").textContent = e.target.value);
+
+$("#save").addEventListener("click", async () => {
+  const btn = $("#save"); btn.disabled = true; $("#status").textContent = "renderizando…";
+  const captions = [...document.querySelectorAll("#caps input")].map(i => ({ i:+i.dataset.i, text:i.value }));
+  const body = { captions };
+  if (!$("#bgm").disabled) body.bgmGainDb = +$("#bgm").value;
+  try {
+    const r = await (await fetch("/api/save", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})).json();
+    if (r.ok){ $("#status").textContent = "listo ✓"; $("#prev").src = bust("/preview.mp4"); }
+    else { $("#status").textContent = "validación falló: " + (r.report.errors[0]?.msg || ""); }
+  } catch(e){ $("#status").textContent = "error: " + e; }
+  btn.disabled = false;
+});
+
+load();
+</script>
+</body>
+</html>
