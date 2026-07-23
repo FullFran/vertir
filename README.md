@@ -65,7 +65,7 @@ vertir/
 ## Roadmap
 
 - [x] **Rebanada 1 — core**: filler-cut + reframe 9:16 + captions word-highlight + validador + render + MCP + web-tweaker
-- [ ] **Rebanada 2** — b-roll (overlays source-anchored) + logo (overlay program-anchored)
+- [x] **Rebanada 2** — b-roll (cortes source-anchored) + logo/marca de agua (overlay program-anchored)
 - [ ] **Rebanada 3** — placas intro/outro + ducking materializado + perfil de loudness
 - [ ] **Rebanada 4** — export a draft de CapCut (feature secundaria, desktop)
 
