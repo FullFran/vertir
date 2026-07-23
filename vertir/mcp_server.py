@@ -55,8 +55,27 @@ TOOLS: list[dict] = [
                                        "proxy": {"type": "boolean"}}},
     },
     {
+        "name": "add_broll",
+        "description": "Add a source-anchored b-roll cutaway to an existing IR: it covers the frame over the speech window [sourceAtUs,sourceEndUs) (original-recording time) while the talking-head audio keeps playing. Re-validates and saves the IR.",
+        "inputSchema": {"type": "object", "required": ["ir", "asset", "sourceAtUs", "sourceEndUs"],
+                        "properties": {
+                            "ir": {"type": "string", "description": "path to the IR JSON to mutate"},
+                            "asset": {"type": "string", "description": "path to the b-roll video/image"},
+                            "sourceAtUs": {"type": "integer"}, "sourceEndUs": {"type": "integer"},
+                            "brollStartUs": {"type": "integer"}, "brollEndUs": {"type": "integer"}}},
+    },
+    {
+        "name": "add_logo",
+        "description": "Set a program-anchored corner logo/watermark for the whole video on an existing IR. Re-validates and saves.",
+        "inputSchema": {"type": "object", "required": ["ir", "asset"],
+                        "properties": {
+                            "ir": {"type": "string"}, "asset": {"type": "string", "description": "logo image (png with alpha)"},
+                            "corner": {"type": "string", "enum": ["top-left", "top-right", "bottom-left", "bottom-right"]},
+                            "scale": {"type": "number"}, "opacity": {"type": "number"}}},
+    },
+    {
         "name": "demo",
-        "description": "Generate a synthetic source + transcript and render an end-to-end example short. No footage needed.",
+        "description": "Generate a synthetic source + transcript and render an end-to-end example short (incl. b-roll + logo). No footage needed.",
         "inputSchema": {"type": "object", "required": ["out_dir"],
                         "properties": {"out_dir": {"type": "string"}}},
     },
@@ -92,6 +111,33 @@ def h_render(args: dict) -> str:
     return json.dumps(receipt, ensure_ascii=False, indent=2)
 
 
+def h_add_broll(args: dict) -> str:
+    doc = I.load(args["ir"])
+    aid, asset = P.ingest(args["asset"], args.get("assetId"))
+    doc["assets"][aid] = asset
+    kw = {}
+    if args.get("brollStartUs") is not None:
+        kw["broll_start_us"] = int(args["brollStartUs"])
+    if args.get("brollEndUs") is not None:
+        kw["broll_end_us"] = int(args["brollEndUs"])
+    clip = E.add_broll(doc, aid, int(args["sourceAtUs"]), int(args["sourceEndUs"]), **kw)
+    E.derive(doc)
+    I.dump(doc, args["ir"])
+    return json.dumps({"clipId": clip["id"], "assetId": aid, "report": V.validate(doc)},
+                      ensure_ascii=False, indent=2)
+
+
+def h_add_logo(args: dict) -> str:
+    doc = I.load(args["ir"])
+    aid, asset = P.ingest(args["asset"], args.get("assetId"))
+    doc["assets"][aid] = asset
+    E.add_logo(doc, aid, corner=args.get("corner", "top-right"),
+               scale=float(args.get("scale", 0.16)), opacity=float(args.get("opacity", 0.9)))
+    E.derive(doc)
+    I.dump(doc, args["ir"])
+    return json.dumps({"assetId": aid, "report": V.validate(doc)}, ensure_ascii=False, indent=2)
+
+
 def h_demo(args: dict) -> str:
     from .demo import run
     res = run(args["out_dir"])
@@ -100,7 +146,7 @@ def h_demo(args: dict) -> str:
 
 HANDLERS: dict[str, Callable[[dict], str]] = {
     "ingest": h_ingest, "build_short": h_build_short, "validate": h_validate,
-    "render": h_render, "demo": h_demo,
+    "render": h_render, "add_broll": h_add_broll, "add_logo": h_add_logo, "demo": h_demo,
 }
 
 
