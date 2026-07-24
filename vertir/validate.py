@@ -190,4 +190,21 @@ def validate(ir: dict) -> dict:
                        f"b-roll {w['clip']['id']} content {content}us != window {window}us "
                        "(will freeze or truncate)", w["clip"]["id"])
 
+    # title cards (intro/outro)
+    prog_end = ir.get("project", {}).get("durationUs", 0)
+    for t in ir.get("tracks", []):
+        if t.get("kind") != "title":
+            continue
+        for c in t.get("clips", []):
+            if not (c.get("text", {}).get("content") or "").strip():
+                r.err("title-empty", f"title {c.get('id')} has empty text", c.get("id"))
+            if not (_is_int(c.get("atUs")) and _is_int(c.get("endUs")) and c["atUs"] < c["endUs"]):
+                r.err("title-interval", f"title {c.get('id')} has invalid interval", c.get("id"))
+                continue
+            if prog_end and (c["atUs"] < 0 or c["endUs"] > prog_end):
+                r.warn("title-oob", f"title {c.get('id')} extends outside the program", c.get("id"))
+            bt = c.get("background", {}).get("type", "transparent")
+            if bt not in ("transparent", "solid", "color", "blurredSource"):
+                r.warn("title-bg", f"title {c.get('id')} unknown background {bt!r}", c.get("id"))
+
     return r.to_dict()

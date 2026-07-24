@@ -45,9 +45,10 @@ def frame_dur_us(f: dict) -> int:
 
 
 def default_output(profile: str = "tiktok") -> dict:
+    lufs = {"tiktok": -14.0, "reels": -14.0, "shorts": -14.0, "generic": -16.0}.get(profile, -14.0)
     return {
         "deliveryProfile": profile,
-        "loudnessLufs": -14.0,
+        "loudnessLufs": lufs,
         "truePeakDb": -1.0,
         "videoCodec": "h264",
         "crf": 18,
@@ -223,6 +224,29 @@ def logo_clip(asset: str, corner: str = "top-right", scale: float = 0.16,
         "corner": corner,          # top-left | top-right | bottom-left | bottom-right
         "marginPx": int(margin_px),
         "transform": {"scale": float(scale), "opacity": float(opacity)},
+    }
+
+
+def title_clip(text: str, at_us: int, end_us: int, background: str = "blurredSource",
+               bg_color: str = "#000000", bg_opacity: float = 1.0,
+               font_family: str = "DejaVu Sans", font_weight: int = 900,
+               font_size_px: int = 104, fill_color: str = "#FFFFFF",
+               stroke_color: str = "#000000", stroke_px: int = 6, y_pct: float = 0.45,
+               fade_in_us: int = 200000, fade_out_us: int = 200000,
+               clip_id: str | None = None) -> dict:
+    """A program-anchored full-screen title card (intro/outro/hook)."""
+    return {
+        "id": clip_id or new_id("t"),
+        "anchor": "program",
+        "atUs": int(at_us),
+        "endUs": int(end_us),
+        "background": {"type": background, "color": bg_color, "opacity": float(bg_opacity)},
+        "text": {"content": text, "fontFamily": font_family, "fontWeight": font_weight,
+                 "fontSizePx": font_size_px, "fillColor": fill_color,
+                 "strokeColor": stroke_color, "strokePx": stroke_px, "align": "center",
+                 "position": {"anchor": "center", "yPct": y_pct}},
+        "fadeInUs": int(fade_in_us),
+        "fadeOutUs": int(fade_out_us),
     }
 
 

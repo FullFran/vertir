@@ -166,6 +166,32 @@ def add_logo(ir: dict, asset_id: str, **kw) -> dict:
     return track["clips"][0]
 
 
+def title_track_of(ir: dict) -> dict | None:
+    for t in ir["tracks"]:
+        if t.get("kind") == "title":
+            return t
+    return None
+
+
+def add_title(ir: dict, text: str, at_us: int, end_us: int, **kw) -> dict:
+    """Add a program-anchored title card (intro/outro/hook)."""
+    I.ensure_track(ir, "titles", "title")
+    track = I.get_track(ir, "titles")
+    clip = I.title_clip(text, at_us, end_us, **kw)
+    track["clips"].append(clip)
+    return clip
+
+
+def add_intro(ir: dict, text: str, dur_us: int = 1_500_000, **kw) -> dict:
+    return add_title(ir, text, 0, dur_us, **kw)
+
+
+def add_outro(ir: dict, text: str, dur_us: int = 1_500_000, **kw) -> dict:
+    derive(ir)
+    end = ir["project"].get("durationUs", 0)
+    return add_title(ir, text, max(0, end - dur_us), end, **kw)
+
+
 def resolve_broll_windows(ir: dict) -> list[dict]:
     """Map each source-anchored b-roll clip to program time via the cut-map.
     Returns [{clip, asset, progStartUs, progEndUs}]; clips fully inside a cut

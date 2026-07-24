@@ -172,9 +172,38 @@ def render_caption_pngs(ir: dict, events: list[dict], work_dir: str,
     return overlays
 
 
+def render_title_pngs(ir: dict, work_dir: str, scale: float) -> list[dict]:
+    """One PNG per title card (the text; backgrounds are done in the filtergraph)."""
+    tr = E.title_track_of(ir)
+    if not tr or not tr.get("clips"):
+        return []
+    conv = shutil.which("convert") or shutil.which("magick")
+    tdir = os.path.join(work_dir, "titles")
+    os.makedirs(tdir, exist_ok=True)
+    out = []
+    for k, clip in enumerate(tr["clips"]):
+        txt = clip.get("text", {})
+        size = max(10, int(round(txt.get("fontSizePx", 104) * scale)))
+        family = txt.get("fontFamily", "DejaVu Sans")
+        fill = txt.get("fillColor", "#FFFFFF")
+        disk = max(1, int(round(txt.get("strokePx", 6) / 2 * scale)))
+        markup = f"<span font='{family} Bold {size}' foreground='{fill}'>{_pango_escape(txt.get('content',''))}</span>"
+        png = os.path.join(tdir, f"title_{k:04d}.png")
+        subprocess.run([conv, "-background", "none", "-define", "pango:align=center",
+                        f"pango:{markup}",
+                        "(", "+clone", "-channel", "A", "-morphology", "Dilate", f"Disk:{disk}",
+                        "+channel", "+level-colors", "black", ")",
+                        "-compose", "DstOver", "-composite",
+                        "-bordercolor", "none", "-border", "10", "+repage", png],
+                       check=True, capture_output=True, text=True)
+        out.append({"clip": clip, "path": png})
+    return out
+
+
 # ------------------------------------------------------------------ command build
 def build_command(ir: dict, out_path: str, ass_path: str | None = None,
-                  caption_overlays: list[dict] | None = None, proxy: bool = False) -> dict:
+                  caption_overlays: list[dict] | None = None,
+                  title_overlays: list[dict] | None = None, proxy: bool = False) -> dict:
     proj = ir["project"]
     cw, ch = proj["canvas"]["w"], proj["canvas"]["h"]
     if proxy:
@@ -218,6 +247,10 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     if caption_overlays:
         for ov in caption_overlays:
             args += ["-i", ov["path"]]
+    title_base = cap_base + (len(caption_overlays) if caption_overlays else 0)
+    if title_overlays:
+        for tv in title_overlays:
+            args += ["-i", tv["path"]]
 
     fc: list[str] = []
     vlabels, alabels = [], []
@@ -293,6 +326,30 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         fc.append(f"{vin}[logo]overlay={pos}:eof_action=repeat[vlogo]")
         vin = "[vlogo]"
 
+    # title cards (intro/outro, top-most): background fill + faded title text
+    for k, tinfo in enumerate(title_overlays or []):
+        clip = tinfo["clip"]
+        j = title_base + k
+        s, e = _us_to_s(clip["atUs"]), _us_to_s(clip["endUs"])
+        bg = clip.get("background", {})
+        bt = bg.get("type", "transparent")
+        if bt == "blurredSource":
+            fc.append(f"{vin}split=2[tbase{k}][tbin{k}]")
+            fc.append(f"[tbin{k}]boxblur=24:2,eq=brightness=-0.08[tbl{k}]")
+            fc.append(f"[tbase{k}][tbl{k}]overlay=0:0:enable='between(t,{s},{e})'[tbg{k}]")
+            vin = f"[tbg{k}]"
+        elif bt in ("solid", "color"):
+            fc.append(f"{vin}drawbox=x=0:y=0:w=iw:h=ih:color={bg.get('color','#000000')}@{bg.get('opacity',1.0)}:"
+                      f"t=fill:enable='between(t,{s},{e})'[tbg{k}]")
+            vin = f"[tbg{k}]"
+        ypct = clip.get("text", {}).get("position", {}).get("yPct", 0.45)
+        # single held frame over the window (same deadlock-free pattern as captions);
+        # fadeIn/Out are modeled in the IR but rendered as a hard cut in v1.
+        fc.append(f"[{j}:v]format=rgba[ttext{k}]")
+        fc.append(f"{vin}[ttext{k}]overlay=(W-w)/2:(H*{ypct:.4f})-h/2:eof_action=repeat:"
+                  f"enable='between(t,{s},{e})'[vt{k}]")
+        vin = f"[vt{k}]"
+
     vlast = vin
 
     # audio: bgm mix (static gain in core; ducking materialized later) + loudness
@@ -305,8 +362,15 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         fo = bgm.get("fadeOutUs", 0) / 1_000_000
         fo_st = max(0.0, proj.get("durationUs", 0) / 1_000_000 - (fo or 0))
         fc.append(f"[{bidx}:a]atrim=0:{dur_s},asetpts=PTS-STARTPTS,volume={g},"
-                  f"afade=t=in:st=0:d={fi:.3f},afade=t=out:st={fo_st:.3f}:d={fo:.3f}[bgm]")
-        fc.append("[speech][bgm]amix=inputs=2:normalize=0:duration=first[amix]")
+                  f"afade=t=in:st=0:d={fi:.3f},afade=t=out:st={fo_st:.3f}:d={fo:.3f},"
+                  f"aformat=sample_rates=48000:channel_layouts=stereo[bgm]")
+        if bgm.get("duck", {}).get("enabled"):
+            # side-chain ducking: the music dips while the talking-head speaks
+            fc.append("[speech]aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[sp_mix][sp_key]")
+            fc.append("[bgm][sp_key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[bgmd]")
+            fc.append("[sp_mix][bgmd]amix=inputs=2:normalize=0:duration=first[amix]")
+        else:
+            fc.append("[speech][bgm]amix=inputs=2:normalize=0:duration=first[amix]")
         alast = "[amix]"
     lufs = out.get("loudnessLufs", -14.0)
     tp = out.get("truePeakDb", -1.0)
@@ -351,8 +415,16 @@ def render(ir: dict, out_path: str, proxy: bool = False) -> dict:
         else:
             warnings.append("no caption backend (no libass/ImageMagick) - rendering without burned captions")
 
-    built = build_command(ir, out_path, ass_path=ass_path,
-                          caption_overlays=caption_overlays, proxy=proxy)
+    title_overlays = None
+    tr = E.title_track_of(ir)
+    if tr and tr.get("clips"):
+        if shutil.which("convert") or shutil.which("magick"):
+            title_overlays = render_title_pngs(ir, out_dir, scale)
+        else:
+            warnings.append("no ImageMagick - title cards not rendered")
+
+    built = build_command(ir, out_path, ass_path=ass_path, caption_overlays=caption_overlays,
+                          title_overlays=title_overlays, proxy=proxy)
     if built["ass"] and ass_path:
         with open(ass_path, "w", encoding="utf-8") as fh:
             fh.write(built["ass"])
