@@ -1,8 +1,8 @@
 """Deterministic renderer: IR -> FFmpeg -> MP4.
 
-v1 core slice: main track (filler-cut + reframe) concat, word-highlight captions,
-optional bgm mix, delivery-profile encode + loudness normalize. Overlays/titles/
-ducking are modeled in the IR but rendered in later slices.
+Renders: main track (filler-cut + reframe) concat, word-highlight captions,
+source-anchored b-roll cutaways, a corner logo, intro/outro title cards, bgm mix
+with side-chain ducking, and delivery-profile encode + loudness normalize.
 
 Caption backend is auto-detected so it works across ffmpeg builds:
   * "libass"      -> ffmpeg `subtitles` filter burns generated ASS  (best)
@@ -55,7 +55,9 @@ def _sub_escape(path: str) -> str:
 
 
 def _pango_escape(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # NUMERIC character references — ImageMagick 6.x's pango coder rejects the
+    # named entities (&amp; &lt; &gt;), so "Q&A" / "AT&T" would crash convert.
+    return s.replace("&", "&#38;").replace("<", "&#60;").replace(">", "&#62;")
 
 
 def reframe_filter(mode: str, cw: int, ch: int, fx: float, fy: float) -> str:
@@ -180,21 +182,28 @@ def render_title_pngs(ir: dict, work_dir: str, scale: float) -> list[dict]:
     conv = shutil.which("convert") or shutil.which("magick")
     tdir = os.path.join(work_dir, "titles")
     os.makedirs(tdir, exist_ok=True)
+    canvas_w = ir["project"]["canvas"]["w"]
+    maxw = max(64, int(round(canvas_w * scale * 0.88)))  # wrap long titles to the canvas
+    border = max(2, int(round(10 * scale)))
     out = []
     for k, clip in enumerate(tr["clips"]):
         txt = clip.get("text", {})
+        content = (txt.get("content") or "").strip()
+        if not content:
+            continue  # validator flags title-empty; never crash convert on empty text
         size = max(10, int(round(txt.get("fontSizePx", 104) * scale)))
-        family = txt.get("fontFamily", "DejaVu Sans")
+        family = txt.get("fontFamily", "DejaVu Sans").replace("'", "")
         fill = txt.get("fillColor", "#FFFFFF")
         disk = max(1, int(round(txt.get("strokePx", 6) / 2 * scale)))
-        markup = f"<span font='{family} Bold {size}' foreground='{fill}'>{_pango_escape(txt.get('content',''))}</span>"
+        markup = f"<span font='{family} Bold {size}' foreground='{fill}'>{_pango_escape(content)}</span>"
         png = os.path.join(tdir, f"title_{k:04d}.png")
-        subprocess.run([conv, "-background", "none", "-define", "pango:align=center",
+        subprocess.run([conv, "-background", "none",
+                        "-define", "pango:align=center", "-define", f"pango:width={maxw}",
                         f"pango:{markup}",
                         "(", "+clone", "-channel", "A", "-morphology", "Dilate", f"Disk:{disk}",
                         "+channel", "+level-colors", "black", ")",
                         "-compose", "DstOver", "-composite",
-                        "-bordercolor", "none", "-border", "10", "+repage", png],
+                        "-bordercolor", "none", "-border", str(border), "+repage", png],
                        check=True, capture_output=True, text=True)
         out.append({"clip": clip, "path": png})
     return out
@@ -248,9 +257,11 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         for ov in caption_overlays:
             args += ["-i", ov["path"]]
     title_base = cap_base + (len(caption_overlays) if caption_overlays else 0)
+    title_png_idx: dict[str, int] = {}
     if title_overlays:
-        for tv in title_overlays:
+        for n, tv in enumerate(title_overlays):
             args += ["-i", tv["path"]]
+            title_png_idx[tv["clip"]["id"]] = title_base + n
 
     fc: list[str] = []
     vlabels, alabels = [], []
@@ -326,10 +337,10 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         fc.append(f"{vin}[logo]overlay={pos}:eof_action=repeat[vlogo]")
         vin = "[vlogo]"
 
-    # title cards (intro/outro, top-most): background fill + faded title text
-    for k, tinfo in enumerate(title_overlays or []):
-        clip = tinfo["clip"]
-        j = title_base + k
+    # title cards (intro/outro, top-most): background always renders (no ImageMagick
+    # needed); the title text overlays only if a PNG was produced for that clip.
+    ttrack = E.title_track_of(ir)
+    for k, clip in enumerate(ttrack["clips"] if ttrack else []):
         s, e = _us_to_s(clip["atUs"]), _us_to_s(clip["endUs"])
         bg = clip.get("background", {})
         bt = bg.get("type", "transparent")
@@ -342,13 +353,15 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
             fc.append(f"{vin}drawbox=x=0:y=0:w=iw:h=ih:color={bg.get('color','#000000')}@{bg.get('opacity',1.0)}:"
                       f"t=fill:enable='between(t,{s},{e})'[tbg{k}]")
             vin = f"[tbg{k}]"
-        ypct = clip.get("text", {}).get("position", {}).get("yPct", 0.45)
-        # single held frame over the window (same deadlock-free pattern as captions);
-        # fadeIn/Out are modeled in the IR but rendered as a hard cut in v1.
-        fc.append(f"[{j}:v]format=rgba[ttext{k}]")
-        fc.append(f"{vin}[ttext{k}]overlay=(W-w)/2:(H*{ypct:.4f})-h/2:eof_action=repeat:"
-                  f"enable='between(t,{s},{e})'[vt{k}]")
-        vin = f"[vt{k}]"
+        jid = title_png_idx.get(clip["id"])
+        if jid is not None:
+            ypct = clip.get("text", {}).get("position", {}).get("yPct", 0.45)
+            # single held frame over the window (deadlock-free, like captions);
+            # fadeIn/Out are modeled in the IR but rendered as a hard cut in v1.
+            fc.append(f"[{jid}:v]format=rgba[ttext{k}]")
+            fc.append(f"{vin}[ttext{k}]overlay=(W-w)/2:(H*{ypct:.4f})-h/2:eof_action=repeat:"
+                      f"enable='between(t,{s},{e})'[vt{k}]")
+            vin = f"[vt{k}]"
 
     vlast = vin
 
@@ -356,12 +369,13 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     alast = "[speech]"
     if bgm is not None:
         bidx = input_index[bgm["asset"]]
-        dur_s = _us_to_s(proj.get("durationUs", 0))
+        prog_s = proj.get("durationUs", 0) / 1_000_000
+        b_start = bgm.get("source", {}).get("startUs", 0) / 1_000_000  # honor the bgm in-point
         g = _db(bgm.get("gainDb", -18.0))
         fi = bgm.get("fadeInUs", 0) / 1_000_000
         fo = bgm.get("fadeOutUs", 0) / 1_000_000
-        fo_st = max(0.0, proj.get("durationUs", 0) / 1_000_000 - (fo or 0))
-        fc.append(f"[{bidx}:a]atrim=0:{dur_s},asetpts=PTS-STARTPTS,volume={g},"
+        fo_st = max(0.0, prog_s - (fo or 0))
+        fc.append(f"[{bidx}:a]atrim=start={b_start:.6f}:end={b_start + prog_s:.6f},asetpts=PTS-STARTPTS,volume={g},"
                   f"afade=t=in:st=0:d={fi:.3f},afade=t=out:st={fo_st:.3f}:d={fo:.3f},"
                   f"aformat=sample_rates=48000:channel_layouts=stereo[bgm]")
         if bgm.get("duck", {}).get("enabled"):
@@ -400,6 +414,11 @@ def render(ir: dict, out_path: str, proxy: bool = False) -> dict:
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
     os.makedirs(out_dir, exist_ok=True)
     E.derive(ir)
+    from . import validate as _V
+    rep = _V.validate(ir)
+    if not rep["ok"]:
+        raise RuntimeError("refusing to render invalid IR: "
+                           + "; ".join(e["msg"] for e in rep["errors"]))
     events = E.resolve_caption_events(ir)
     backend = caption_backend()
     scale = 0.5 if proxy else 1.0

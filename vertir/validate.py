@@ -207,4 +207,13 @@ def validate(ir: dict) -> dict:
             if bt not in ("transparent", "solid", "color", "blurredSource"):
                 r.warn("title-bg", f"title {c.get('id')} unknown background {bt!r}", c.get("id"))
 
+    tclips = sorted(
+        (c for t in ir.get("tracks", []) if t.get("kind") == "title"
+         for c in t.get("clips", []) if _is_int(c.get("atUs")) and _is_int(c.get("endUs"))),
+        key=lambda c: c["atUs"])
+    for i in range(1, len(tclips)):
+        if tclips[i]["atUs"] < tclips[i - 1]["endUs"]:
+            r.warn("title-overlap",
+                   f"title {tclips[i].get('id')} overlaps {tclips[i - 1].get('id')}", "titles")
+
     return r.to_dict()

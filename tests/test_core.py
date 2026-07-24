@@ -3,7 +3,9 @@
     python -m unittest discover -s tests -v
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -288,6 +290,49 @@ class TestTitlesAndDucking(unittest.TestCase):
         built = R.build_command(self._with_bgm(self._doc(), False), "/tmp/o.mp4")
         fc = built["args"][built["args"].index("-filter_complex") + 1]
         self.assertNotIn("sidechaincompress", fc)
+
+
+def _cut_doc():
+    doc = sample_ir()
+    tx = T.normalize({"words": [
+        {"sourceAtUs": 1_000_000, "sourceEndUs": 2_000_000, "text": "a"},
+        {"sourceAtUs": 2_100_000, "sourceEndUs": 3_000_000, "text": "b"},
+    ]})
+    E.cut_fillers(doc, tx, "hero", pad_us=0)
+    return doc
+
+
+class TestReviewFixesR3(unittest.TestCase):
+    def test_pango_escape_is_numeric(self):
+        self.assertEqual(R._pango_escape("Q&A"), "Q&#38;A")
+        self.assertEqual(R._pango_escape("a<b>c"), "a&#60;b&#62;c")
+
+    def test_render_refuses_invalid_ir(self):
+        with self.assertRaises(RuntimeError):
+            R.render(sample_ir(), "/tmp/vertir_should_not_render.mp4")  # empty main -> invalid
+
+    def test_empty_title_png_skipped(self):
+        doc = _cut_doc()
+        E.add_intro(doc, "   ", dur_us=500_000)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(R.render_title_pngs(doc, d, 1.0), [])  # skipped, no convert crash
+
+    def test_title_overlap_warns(self):
+        doc = _cut_doc()
+        E.add_title(doc, "A", 0, 1_000_000)
+        E.add_title(doc, "B", 500_000, 1_500_000)
+        rep = V.validate(doc)
+        self.assertTrue(any(w["code"] == "title-overlap" for w in rep["warnings"]))
+
+    def test_title_with_ampersand_renders(self):
+        if not (shutil.which("convert") or shutil.which("magick")):
+            self.skipTest("ImageMagick not available")
+        doc = _cut_doc()
+        E.add_intro(doc, "TIPS & TRICKS <2026>", dur_us=500_000)
+        with tempfile.TemporaryDirectory() as d:
+            pngs = R.render_title_pngs(doc, d, 0.5)
+            self.assertEqual(len(pngs), 1)
+            self.assertTrue(os.path.exists(pngs[0]["path"]))
 
 
 if __name__ == "__main__":
