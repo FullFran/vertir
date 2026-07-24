@@ -66,7 +66,7 @@ vertir/
 
 - [x] **Rebanada 1 — core**: filler-cut + reframe 9:16 + captions word-highlight + validador + render + MCP + web-tweaker
 - [x] **Rebanada 2** — b-roll (cortes source-anchored) + logo/marca de agua (overlay program-anchored)
-- [ ] **Rebanada 3** — placas intro/outro + ducking materializado + perfil de loudness
+- [x] **Rebanada 3** — placas intro/outro (hook cards) + ducking de música (side-chain) + perfil de loudness por plataforma
 - [ ] **Rebanada 4** — export a draft de CapCut (feature secundaria, desktop)
 
 ## Contribuir
