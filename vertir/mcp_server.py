@@ -74,8 +74,20 @@ TOOLS: list[dict] = [
                             "scale": {"type": "number"}, "opacity": {"type": "number"}}},
     },
     {
+        "name": "add_title",
+        "description": "Add a program-anchored full-screen title card (intro/outro/hook) to an existing IR. Use position='intro' (starts at 0), 'outro' (ends at program end), or explicit atUs/endUs. Re-validates and saves.",
+        "inputSchema": {"type": "object", "required": ["ir", "text"],
+                        "properties": {
+                            "ir": {"type": "string"}, "text": {"type": "string"},
+                            "position": {"type": "string", "enum": ["intro", "outro", "custom"]},
+                            "durUs": {"type": "integer", "description": "duration for intro/outro (default 1.5s)"},
+                            "atUs": {"type": "integer"}, "endUs": {"type": "integer"},
+                            "background": {"type": "string", "enum": ["transparent", "solid", "color", "blurredSource"]},
+                            "bgColor": {"type": "string"}}},
+    },
+    {
         "name": "demo",
-        "description": "Generate a synthetic source + transcript and render an end-to-end example short (incl. b-roll + logo). No footage needed.",
+        "description": "Generate a synthetic source + transcript and render an end-to-end example short (incl. b-roll + logo + intro/outro + music ducking). No footage needed.",
         "inputSchema": {"type": "object", "required": ["out_dir"],
                         "properties": {"out_dir": {"type": "string"}}},
     },
@@ -138,6 +150,26 @@ def h_add_logo(args: dict) -> str:
     return json.dumps({"assetId": aid, "report": V.validate(doc)}, ensure_ascii=False, indent=2)
 
 
+def h_add_title(args: dict) -> str:
+    doc = I.load(args["ir"])
+    kw = {}
+    if args.get("background"):
+        kw["background"] = args["background"]
+    if args.get("bgColor"):
+        kw["bg_color"] = args["bgColor"]
+    dur = int(args.get("durUs", 1_500_000))
+    pos = args.get("position", "custom")
+    if pos == "intro":
+        clip = E.add_intro(doc, args["text"], dur_us=dur, **kw)
+    elif pos == "outro":
+        clip = E.add_outro(doc, args["text"], dur_us=dur, **kw)
+    else:
+        clip = E.add_title(doc, args["text"], int(args["atUs"]), int(args["endUs"]), **kw)
+    E.derive(doc)
+    I.dump(doc, args["ir"])
+    return json.dumps({"clipId": clip["id"], "report": V.validate(doc)}, ensure_ascii=False, indent=2)
+
+
 def h_demo(args: dict) -> str:
     from .demo import run
     res = run(args["out_dir"])
@@ -146,7 +178,8 @@ def h_demo(args: dict) -> str:
 
 HANDLERS: dict[str, Callable[[dict], str]] = {
     "ingest": h_ingest, "build_short": h_build_short, "validate": h_validate,
-    "render": h_render, "add_broll": h_add_broll, "add_logo": h_add_logo, "demo": h_demo,
+    "render": h_render, "add_broll": h_add_broll, "add_logo": h_add_logo,
+    "add_title": h_add_title, "demo": h_demo,
 }
 
 

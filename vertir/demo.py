@@ -65,4 +65,8 @@ def run(out_dir: str) -> dict:
     doc["assets"][laid] = lasset
     E.add_logo(doc, laid, corner="top-right", scale=0.15, opacity=0.9)
 
+    # intro + outro title cards (bgm ducks under the talking head automatically)
+    E.add_intro(doc, "3 TRUCOS DE EDICION", dur_us=1_400_000, background="blurredSource")
+    E.add_outro(doc, "SEGUIME PARA MAS", dur_us=1_400_000, background="solid", bg_color="#111318")
+
     return render_doc(doc, out_dir)
