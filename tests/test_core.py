@@ -236,5 +236,59 @@ class TestOverlays(unittest.TestCase):
         self.assertTrue(any(e["code"] == "broll-overlap" for e in rep["errors"]))
 
 
+class TestTitlesAndDucking(unittest.TestCase):
+    def _doc(self):
+        doc = sample_ir()
+        tx = T.normalize({"words": [
+            {"sourceAtUs": 1_000_000, "sourceEndUs": 2_000_000, "text": "hola"},
+            {"sourceAtUs": 2_100_000, "sourceEndUs": 3_000_000, "text": "mundo"},
+        ]})
+        E.cut_fillers(doc, tx, "hero", pad_us=0)
+        return doc
+
+    def _with_bgm(self, doc, duck):
+        doc["assets"]["bgm"] = {"sha256": "m", "path": "/tmp/m.m4a", "kind": "audio",
+                                "probe": {"durationUs": 20_000_000, "hasAudio": True}}
+        I.ensure_track(doc, "bgmTrack", "audio", role="bgm")
+        I.get_track(doc, "bgmTrack")["clips"] = [I.bgm_clip("bgm", duck=duck)]
+        return doc
+
+    def test_add_intro_outro_windows(self):
+        doc = self._doc()
+        E.add_intro(doc, "HOLA", dur_us=500_000)
+        E.add_outro(doc, "CHAU", dur_us=500_000)
+        clips = E.title_track_of(doc)["clips"]
+        self.assertEqual((clips[0]["atUs"], clips[0]["endUs"]), (0, 500_000))
+        end = doc["project"]["durationUs"]
+        self.assertEqual((clips[1]["atUs"], clips[1]["endUs"]), (end - 500_000, end))
+        self.assertTrue(V.validate(doc)["ok"], V.validate(doc))
+
+    def test_empty_title_errors(self):
+        doc = self._doc()
+        E.add_intro(doc, "   ", dur_us=500_000)
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "title-empty" for e in rep["errors"]))
+
+    def test_build_command_composites_title(self):
+        doc = self._doc()
+        clip = E.add_intro(doc, "HOLA", dur_us=500_000, background="blurredSource")
+        built = R.build_command(doc, "/tmp/o.mp4", title_overlays=[{"clip": clip, "path": "/tmp/t.png"}])
+        fc = built["args"][built["args"].index("-filter_complex") + 1]
+        self.assertIn("boxblur", fc)          # blurred background
+        self.assertIn("[ttext0]", fc)         # title text stream
+        self.assertIn("eof_action=repeat", fc)  # single frame held over the window
+        self.assertIn("[vt0]", built["args"])
+
+    def test_ducking_emitted_when_enabled(self):
+        built = R.build_command(self._with_bgm(self._doc(), True), "/tmp/o.mp4")
+        fc = built["args"][built["args"].index("-filter_complex") + 1]
+        self.assertIn("sidechaincompress", fc)
+
+    def test_no_ducking_when_disabled(self):
+        built = R.build_command(self._with_bgm(self._doc(), False), "/tmp/o.mp4")
+        fc = built["args"][built["args"].index("-filter_complex") + 1]
+        self.assertNotIn("sidechaincompress", fc)
+
+
 if __name__ == "__main__":
     unittest.main()
