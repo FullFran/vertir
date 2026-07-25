@@ -238,7 +238,10 @@ def resolve_caption_events(ir: dict) -> list[dict]:
                 pe = seg["progEndUs"] if seg else ps + (w["sourceEndUs"] - w["sourceAtUs"])
             else:
                 pe += 1
-            pwords.append({"progAtUs": ps, "progEndUs": pe, "text": w["text"]})
+            pw = {"progAtUs": ps, "progEndUs": pe, "text": w["text"]}
+            if w.get("emphasis"):
+                pw["emphasis"] = True
+            pwords.append(pw)
         if not pwords:
             continue
         events.append({

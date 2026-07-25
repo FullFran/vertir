@@ -149,6 +149,8 @@ def caption_style(**over) -> dict:
         "fontSizePx": 76,
         "fillColor": "#FFFFFF",
         "highlightColor": "#FFE000",
+        # words the planner marked as carrying the claim (plan.emphasis)
+        "emphasisColor": "#FF3B30",
         "strokeColor": "#000000",
         "strokePx": 8,
         "uppercase": True,

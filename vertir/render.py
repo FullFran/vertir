@@ -68,6 +68,57 @@ def reframe_filter(mode: str, cw: int, ch: int, fx: float, fy: float) -> str:
             f"crop={cw}:{ch}:(iw-{cw})*{fx:.4f}:(ih-{ch})*{fy:.4f}")
 
 
+# ------------------------------------------------------------------ keyframes: scale (punch-in)
+def _us_expr(us: int) -> str:
+    return f"{us / 1_000_000:.6f}"
+
+
+def scale_expr(clip: dict) -> str | None:
+    """Build an ffmpeg time expression for a clip's `scale` keyframes (IR §5).
+
+    `atUs` is clip-local, and the main-track chain applies `setpts=PTS-STARTPTS`,
+    so filter time `t` is clip-local too and the two line up directly.
+    Returns None when the clip has no scale animation worth rendering.
+    """
+    kfs = sorted((k for k in clip.get("keyframes", []) if k.get("prop") == "scale"),
+                 key=lambda k: k.get("atUs", 0))
+    if not kfs or all(abs(float(k.get("v", 1.0)) - 1.0) < 1e-4 for k in kfs):
+        return None
+
+    expr = f"{float(kfs[-1].get('v', 1.0)):.4f}"          # past the last kf: hold
+    for i in range(len(kfs) - 1, 0, -1):
+        a, b = kfs[i - 1], kfs[i]
+        t0, t1 = int(a.get("atUs", 0)), int(b.get("atUs", 0))
+        v0, v1 = float(a.get("v", 1.0)), float(b.get("v", 1.0))
+        ease = b.get("ease", "linear")
+        if t1 <= t0 or ease == "hold":
+            seg = f"{v0:.4f}"
+        else:
+            u = f"(t-{_us_expr(t0)})/{_us_expr(t1 - t0)}"
+            if ease == "easeInOut":                        # smoothstep
+                seg = f"{v0:.4f}+{v1 - v0:.4f}*(({u})*({u})*(3-2*({u})))"
+            else:
+                seg = f"{v0:.4f}+{v1 - v0:.4f}*({u})"
+        expr = f"if(lt(t,{_us_expr(t1)}),{seg},{expr})"
+    return f"if(lt(t,{_us_expr(int(kfs[0].get('atUs', 0)))}),{float(kfs[0].get('v', 1.0)):.4f},{expr})"
+
+
+def punch_filter(clip: dict, cw: int, ch: int) -> str:
+    """Animated zoom for a main clip, as a filter chain suffix ("" if none).
+
+    Uses `scale` with `eval=frame` plus a centred `crop` rather than `zoompan`:
+    zoompan rounds its x/y to integers every frame, which reads as a visible
+    shake on a subtle punch-in. `max(1,...)` guards the crop against ever being
+    asked for more pixels than the scaled frame has.
+    """
+    z = scale_expr(clip)
+    if not z:
+        return ""
+    zc = f"max(1,{z})"
+    return (f",scale=w='trunc({cw}*{zc}/2)*2':h='trunc({ch}*{zc}/2)*2':eval=frame"
+            f",crop={cw}:{ch}:'(iw-ow)/2':'(ih-oh)/2'")
+
+
 # ------------------------------------------------------------------ backend detect
 @lru_cache(maxsize=1)
 def _has_subtitles_filter() -> bool:
@@ -94,6 +145,7 @@ def generate_ass(ir: dict, events: list[dict], cw: int, ch: int) -> str:
     st = cap.get("style", {}) if cap else I.caption_style()
     fill = _hex_to_ass(st.get("fillColor", "#FFFFFF"))
     hi = _hex_to_ass(st.get("highlightColor", "#FFE000"))
+    emph = _hex_to_ass(st.get("emphasisColor", "#FF3B30"))
     stroke = _hex_to_ass(st.get("strokeColor", "#000000"))
     size = int(st.get("fontSizePx", 76))
     font = st.get("fontFamily", "DejaVu Sans")
@@ -115,7 +167,9 @@ def generate_ass(ir: dict, events: list[dict], cw: int, ch: int) -> str:
         parts = []
         for i, w in enumerate(words):
             txt = (w["text"].upper() if upper else w["text"]).replace("{", "(").replace("}", ")")
-            parts.append(f"{{\\c{hi}}}{txt}{{\\c{fill}}}" if i == active else txt)
+            # the active word wins over emphasis, so the karaoke read stays legible
+            col = hi if i == active else (emph if w.get("emphasis") else None)
+            parts.append(f"{{\\c{col}}}{txt}{{\\c{fill}}}" if col else txt)
         return " ".join(parts)
 
     rows = []
@@ -134,6 +188,7 @@ def _caption_states(ir: dict, events: list[dict], scale: float) -> list[dict]:
     family = st.get("fontFamily", "DejaVu Sans")
     fill = st.get("fillColor", "#FFFFFF")
     hi = st.get("highlightColor", "#FFE000")
+    emph = st.get("emphasisColor", "#FF3B30")
     size = max(8, int(round(st.get("fontSizePx", 76) * scale)))
     upper = st.get("uppercase", True)
     out = []
@@ -143,7 +198,7 @@ def _caption_states(ir: dict, events: list[dict], scale: float) -> list[dict]:
             spans = []
             for i, ww in enumerate(words):
                 txt = _pango_escape(ww["text"].upper() if upper else ww["text"])
-                color = hi if i == active else fill
+                color = hi if i == active else (emph if ww.get("emphasis") else fill)
                 spans.append(f"<span font='{family} Bold {size}' foreground='{color}'>{txt}</span>")
             out.append({"startUs": w["progAtUs"], "endUs": w["progEndUs"],
                         "markup": "<span> </span>".join(spans)})
@@ -271,7 +326,8 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         rf = c.get("reframe", {"mode": "cover", "focusX": 0.5, "focusY": 0.4})
         vf = reframe_filter(rf.get("mode", "cover"), cw, ch, rf.get("focusX", 0.5), rf.get("focusY", 0.4))
         fc.append(f"[{idx}:v]trim=start={_us_to_s(s)}:end={_us_to_s(e)},"
-                  f"setpts=PTS-STARTPTS,{vf},fps={fps_r},format=yuv420p[v{i}]")
+                  f"setpts=PTS-STARTPTS,{vf}{punch_filter(c, cw, ch)},"
+                  f"fps={fps_r},format=yuv420p[v{i}]")
         has_audio = assets[c["asset"]].get("probe", {}).get("hasAudio", True)
         gain = c.get("audio", {}).get("gainDb", 0.0)
         if has_audio and not c.get("audio", {}).get("mute", False):
