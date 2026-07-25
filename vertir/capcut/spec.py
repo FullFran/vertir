@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 
 from .. import ir as I
 from .. import edit as E
@@ -421,12 +422,21 @@ def export(ir: dict, out_dir: str, *, name: str | None = None,
                 "losses": losses,
                 "error": (res["stderr"] or res["stdout"]).strip()}
 
+    # Snapshot the draft exactly as written: reconcile diffs against this, so it
+    # can tell a human's edits apart from what we generated.
+    snapshot_dir = os.path.join(out_dir, "capcut-draft.exported")
+    if os.path.isdir(snapshot_dir):
+        shutil.rmtree(snapshot_dir)
+    shutil.copytree(draft_dir, snapshot_dir)
+
     prov = Provenance(ir_version=ir.get("irVersion", ""), draft_path=draft_dir,
-                      refs=_collect_refs(spec))
+                      refs=_collect_refs(spec), snapshot_path=snapshot_dir)
+    prov.bind_segments((res["json"] or {}).get("refs", {}))
     prov_path = prov.dump(out_dir)
 
     return {"ok": True, "stage": "compiled", "specPath": spec_path,
             "draftPath": draft_dir, "provenancePath": prov_path,
+            "snapshotPath": snapshot_dir,
             "losses": losses, "result": res["json"]}
 
 
