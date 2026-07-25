@@ -7,6 +7,8 @@
     python -m vertir render   timeline.ir.json --out final.mp4 [--proxy]
     python -m vertir ingest   media.mp4
     python -m vertir capcut   timeline.ir.json --out ./out [--check]
+    python -m vertir reconcile timeline.ir.json --draft ./out/capcut-draft \
+                              --provenance ./out/capcut.provenance.json
     python -m vertir mcp                       # stdio MCP server for Claude Code
     python -m vertir web      --ir timeline.ir.json --dir ./out
 """
@@ -122,6 +124,30 @@ def cmd_capcut(a) -> int:
     return 0
 
 
+def cmd_reconcile(a) -> int:
+    from .capcut.reconcile import reconcile_files
+    rep = reconcile_files(a.ir, a.draft, a.provenance, out_path=a.out)
+    if not rep["changed"] and rep["ok"]:
+        print("no changes in the draft; the IR is already up to date")
+        return 0
+    for item in rep.get("applied", []):
+        print(f"  applied   {item['clip']}: {', '.join(item['fields'])}")
+    for item in rep.get("pinnedInCapCut", []):
+        who = item.get("clip") or item.get("segment")
+        print(f"  pinned    {who}: {item['reason']}")
+    for item in rep.get("unknownSegments", []):
+        print(f"  unknown   {item.get('segment')}: {item['reason']}")
+    for w in rep.get("warnings", []):
+        print(f"  warn      {w}")
+    for e in rep.get("errors", []):
+        print(f"  ERROR     {e}")
+    if rep.get("validation"):
+        _print_report(rep["validation"])
+    if rep["ok"]:
+        print(f"\nreconciled -> {rep.get('irPath', a.ir)}")
+    return 0 if rep["ok"] else 1
+
+
 def cmd_mcp(a) -> int:
     from .mcp_server import serve
     serve()
@@ -160,6 +186,12 @@ def main(argv=None) -> int:
     c.add_argument("ir"); c.add_argument("--out", default="./vertir-out")
     c.add_argument("--name", default=None); c.add_argument("--check", action="store_true")
     c.set_defaults(fn=cmd_capcut)
+
+    rc = sub.add_parser("reconcile", help="pull CapCut edits back into the IR")
+    rc.add_argument("ir"); rc.add_argument("--draft", required=True)
+    rc.add_argument("--provenance", required=True)
+    rc.add_argument("--out", default=None, help="write here instead of in place")
+    rc.set_defaults(fn=cmd_reconcile)
 
     m = sub.add_parser("mcp"); m.set_defaults(fn=cmd_mcp)
 

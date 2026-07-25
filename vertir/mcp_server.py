@@ -137,6 +137,21 @@ TOOLS: list[dict] = [
                             "check": {"type": "boolean", "description": "validate without writing a draft"}}},
     },
     {
+        "name": "reconcile_capcut",
+        "description": (
+            "Pull a human's CapCut edits back into the IR. PATCHES the existing IR using "
+            "`capcut diff` against the export snapshot — it never rebuilds the IR from the "
+            "draft, because the IR carries intent (reframe focus, source-anchored b-roll, "
+            "ducking rules) that a draft does not. Report `pinnedInCapCut` to the user: those "
+            "are edits that stay in the draft and are NOT managed by the IR."),
+        "inputSchema": {"type": "object", "required": ["ir", "draft", "provenance"],
+                        "properties": {
+                            "ir": {"type": "string", "description": "path to the IR to patch"},
+                            "draft": {"type": "string", "description": "the edited CapCut draft dir"},
+                            "provenance": {"type": "string", "description": "capcut.provenance.json from the export"},
+                            "out": {"type": "string", "description": "write here instead of in place"}}},
+    },
+    {
         "name": "capcut_doctor",
         "description": "Check whether the optional capcut-cli bridge is usable (Node, CLI, draft dirs).",
         "inputSchema": {"type": "object", "properties": {}},
@@ -275,6 +290,13 @@ def h_export_capcut(args: dict) -> str:
     return json.dumps(res, ensure_ascii=False, indent=2)
 
 
+def h_reconcile_capcut(args: dict) -> str:
+    from .capcut.reconcile import reconcile_files
+    rep = reconcile_files(args["ir"], args["draft"], args["provenance"],
+                          out_path=args.get("out"))
+    return json.dumps(rep, ensure_ascii=False, indent=2)
+
+
 def h_capcut_doctor(args: dict) -> str:
     from .capcut import bridge
     return json.dumps(bridge.doctor(), ensure_ascii=False, indent=2)
@@ -287,6 +309,7 @@ HANDLERS: dict[str, Callable[[dict], str]] = {
     "propose_plan": h_propose_plan, "apply_plan": h_apply_plan,
     "validate_plan": h_validate_plan,
     "export_capcut": h_export_capcut, "capcut_doctor": h_capcut_doctor,
+    "reconcile_capcut": h_reconcile_capcut,
 }
 
 

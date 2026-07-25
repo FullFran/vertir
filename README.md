@@ -36,6 +36,31 @@ peor que no tener export: el draft parece terminado y no lo está. Cada construc
 que no cruza sale en el informe de pérdidas con su severidad
 (`dropped` / `degraded` / `unverified`).
 
+## Reconcile: las ediciones humanas vuelven al IR
+
+```bash
+python -m vertir reconcile ./out/timeline.ir.json \
+    --draft ./out/capcut-draft --provenance ./out/capcut.provenance.json
+```
+
+**Parchea el IR; no lo reconstruye.** Y esa es toda la diferencia.
+
+El IR lleva **intención**; un draft sólo lleva **resultado**:
+
+| IR (intención) | draft de CapCut (resultado) | se perdería |
+| --- | --- | --- |
+| `reframe {mode, focusX, focusY}` | un rect de crop | "seguí la cara" |
+| b-roll anclado a la fuente | un timestamp de programa | el anclaje |
+| `duck {enabled, targetDb}` | keyframes de volumen | la regla |
+
+Por eso guardamos un snapshot del draft tal como se exportó más un mapa de
+procedencia, le pedimos a `capcut diff` **qué cambió el humano**, y aplicamos
+sólo ese delta encima del IR que ya teníamos.
+
+Lo que no sabemos mapear (filtros, efectos, elementos creados en CapCut) sale
+como `pinnedInCapCut`: se queda en el draft y se dice en voz alta que el IR no
+lo gestiona. Nunca se descarta en silencio ni se finge entenderlo.
+
 ## Uso rápido
 
 ```bash
@@ -116,7 +141,7 @@ vertir/
 - [x] **Rebanada 3** — placas intro/outro (hook cards) + ducking de música (side-chain) + perfil de loudness por plataforma
 - [x] **Rebanada 5 — planner editorial**: el LLM decide el corte (hook, drops, beats de punch-in, énfasis, placas) en vez de sólo ejecutarlo
 - [x] **Rebanada 4 — export a CapCut**: el IR se transpila a un draft de CapCut/JianYing vía `capcut-cli`, con informe de pérdidas explícito
-- [ ] **Rebanada 6** — reconciliar ediciones hechas en CapCut de vuelta al IR
+- [x] **Rebanada 6 — reconcile**: las ediciones hechas a mano en CapCut vuelven al IR **parcheando**, nunca re-parseando
 - [ ] **Rebanada 7** — motion graphics vía fábrica de assets (backend Remotion)
 
 ## Contribuir

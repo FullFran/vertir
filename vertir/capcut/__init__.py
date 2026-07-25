@@ -15,3 +15,6 @@ clear error rather than a broken draft when the CLI is absent.
 from .bridge import CapCutUnavailable, available, doctor, version  # noqa: F401
 from .spec import build_spec, export  # noqa: F401
 from .provenance import Provenance  # noqa: F401
+# NOT `from .reconcile import reconcile`: that would rebind the `reconcile`
+# submodule attribute to the function and break `from . import reconcile`.
+from .reconcile import reconcile_files  # noqa: F401
