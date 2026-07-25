@@ -6,6 +6,7 @@
     python -m vertir validate timeline.ir.json
     python -m vertir render   timeline.ir.json --out final.mp4 [--proxy]
     python -m vertir ingest   media.mp4
+    python -m vertir capcut   timeline.ir.json --out ./out [--check]
     python -m vertir mcp                       # stdio MCP server for Claude Code
     python -m vertir web      --ir timeline.ir.json --dir ./out
 """
@@ -91,6 +92,36 @@ def cmd_ingest(a) -> int:
     return 0
 
 
+def cmd_capcut(a) -> int:
+    from .capcut import spec as CS
+    from . import edit as E
+    doc = I.load(a.ir)
+    E.derive(doc)
+    res = CS.export(doc, a.out, name=a.name, check_only=a.check)
+
+    losses = res.get("losses", [])
+    if losses:
+        print(f"export losses ({len(losses)}):")
+    for loss in losses:
+        n = loss.get("count", 1)
+        scope = f" x{n}" if n > 1 else ""
+        print(f"  {loss['severity']:<10} [{loss['code']}]{scope} {loss['construct']}: {loss['detail']}")
+    if not res["ok"]:
+        print(f"\nexport failed at stage: {res['stage']}")
+        if res.get("hint"):
+            print(res["hint"])
+        if res.get("error"):
+            print(res["error"])
+        if res.get("report"):
+            _print_report(res["report"])
+        return 1
+    print(f"\nexport OK ({res['stage']})")
+    for key in ("specPath", "draftPath", "provenancePath"):
+        if res.get(key):
+            print(f"  {key}: {res[key]}")
+    return 0
+
+
 def cmd_mcp(a) -> int:
     from .mcp_server import serve
     serve()
@@ -124,6 +155,11 @@ def main(argv=None) -> int:
     r.add_argument("--proxy", action="store_true"); r.set_defaults(fn=cmd_render)
 
     g = sub.add_parser("ingest"); g.add_argument("media"); g.set_defaults(fn=cmd_ingest)
+
+    c = sub.add_parser("capcut", help="export an IR to a CapCut/JianYing draft")
+    c.add_argument("ir"); c.add_argument("--out", default="./vertir-out")
+    c.add_argument("--name", default=None); c.add_argument("--check", action="store_true")
+    c.set_defaults(fn=cmd_capcut)
 
     m = sub.add_parser("mcp"); m.set_defaults(fn=cmd_mcp)
 

@@ -15,6 +15,26 @@ Rebanadas siguientes: b-roll + logo (2), placas intro/outro + ducking + loudness
 
 - Python ≥ 3.11
 - `ffmpeg` y `ffprobe` en el PATH
+- *(opcional, sólo para el export a CapCut)* [`capcut-cli`](https://github.com/renezander030/capcut-cli) — necesita Node ≥ 18. Sin él, el resto del pipeline funciona igual.
+
+## Export a CapCut
+
+El IR es el contrato; esto es un **adaptador**, no un segundo renderer. FFmpeg
+sigue siendo el único compositor de píxeles finales y el modelo nunca toca un draft.
+
+```bash
+python -m vertir capcut ./out/timeline.ir.json --out ./out          # escribe el draft
+python -m vertir capcut ./out/timeline.ir.json --out ./out --check  # sólo valida
+```
+
+Fail-closed por los dos lados: primero el validador del IR, después
+`capcut compile --check`, y sólo entonces se escribe.
+
+El mapeo **es lossy y lo decimos**. Un export que descarta en silencio la
+normalización de loudness, el ducking side-chain o el resaltado por palabra es
+peor que no tener export: el draft parece terminado y no lo está. Cada construcción
+que no cruza sale en el informe de pérdidas con su severidad
+(`dropped` / `degraded` / `unverified`).
 
 ## Uso rápido
 
@@ -85,6 +105,7 @@ vertir/
   probe.py       # ingest (ffprobe) + sha256            render.py    # FFmpeg + ASS word-highlight
   transcript.py  # transcript + loaders (whisper.cpp)   pipeline.py  # ensamblado core
   edit.py        # cortes, cut-map (source→program)     plan.py      # plan editorial (juicio del LLM)
+  capcut/        # adaptador a CapCut (bridge/spec/provenance)
   cli.py / mcp_server.py / web/
 ```
 
@@ -94,7 +115,7 @@ vertir/
 - [x] **Rebanada 2** — b-roll (cortes source-anchored) + logo/marca de agua (overlay program-anchored)
 - [x] **Rebanada 3** — placas intro/outro (hook cards) + ducking de música (side-chain) + perfil de loudness por plataforma
 - [x] **Rebanada 5 — planner editorial**: el LLM decide el corte (hook, drops, beats de punch-in, énfasis, placas) en vez de sólo ejecutarlo
-- [ ] **Rebanada 4** — export a draft de CapCut (feature secundaria, desktop)
+- [x] **Rebanada 4 — export a CapCut**: el IR se transpila a un draft de CapCut/JianYing vía `capcut-cli`, con informe de pérdidas explícito
 - [ ] **Rebanada 6** — reconciliar ediciones hechas en CapCut de vuelta al IR
 - [ ] **Rebanada 7** — motion graphics vía fábrica de assets (backend Remotion)
 

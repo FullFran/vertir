@@ -122,6 +122,26 @@ TOOLS: list[dict] = [
                             "plan_json": {"type": "object"}, "plan": {"type": "string"}}},
     },
     {
+        "name": "export_capcut",
+        "description": (
+            "Export a Timeline IR to a CapCut / JianYing draft so a human can do the final "
+            "tweak in the app. ALWAYS read the returned `losses` and tell the user what did "
+            "not survive: loudness normalisation, side-chain ducking, word-level caption "
+            "highlighting and reframe focus have no CapCut equivalent. Requires the optional "
+            "capcut-cli (Node); without it the spec is still written and the reason reported."),
+        "inputSchema": {"type": "object", "required": ["ir", "out_dir"],
+                        "properties": {
+                            "ir": {"type": "string", "description": "path to the timeline IR JSON"},
+                            "out_dir": {"type": "string"},
+                            "name": {"type": "string", "description": "draft display name"},
+                            "check": {"type": "boolean", "description": "validate without writing a draft"}}},
+    },
+    {
+        "name": "capcut_doctor",
+        "description": "Check whether the optional capcut-cli bridge is usable (Node, CLI, draft dirs).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "demo",
         "description": "Generate a synthetic source + transcript and render an end-to-end example short (incl. b-roll + logo + intro/outro + music ducking). No footage needed.",
         "inputSchema": {"type": "object", "required": ["out_dir"],
@@ -246,12 +266,27 @@ def h_apply_plan(args: dict) -> str:
                       ensure_ascii=False, indent=2)
 
 
+def h_export_capcut(args: dict) -> str:
+    from .capcut import spec as CS
+    doc = I.load(args["ir"])
+    E.derive(doc)
+    res = CS.export(doc, args["out_dir"], name=args.get("name"),
+                    check_only=bool(args.get("check", False)))
+    return json.dumps(res, ensure_ascii=False, indent=2)
+
+
+def h_capcut_doctor(args: dict) -> str:
+    from .capcut import bridge
+    return json.dumps(bridge.doctor(), ensure_ascii=False, indent=2)
+
+
 HANDLERS: dict[str, Callable[[dict], str]] = {
     "ingest": h_ingest, "build_short": h_build_short, "validate": h_validate,
     "render": h_render, "add_broll": h_add_broll, "add_logo": h_add_logo,
     "add_title": h_add_title, "demo": h_demo,
     "propose_plan": h_propose_plan, "apply_plan": h_apply_plan,
     "validate_plan": h_validate_plan,
+    "export_capcut": h_export_capcut, "capcut_doctor": h_capcut_doctor,
 }
 
 
