@@ -2,6 +2,7 @@
 
     python -m vertir demo   --out ./out
     python -m vertir build  --hero h.mp4 --transcript t.json --out ./out [--bgm b.m4a]
+                            [--plan plan.json | --baseline-plan]
     python -m vertir validate timeline.ir.json
     python -m vertir render   timeline.ir.json --out final.mp4 [--proxy]
     python -m vertir ingest   media.mp4
@@ -41,8 +42,21 @@ def cmd_demo(a) -> int:
 
 def cmd_build(a) -> int:
     from .pipeline import build_short
+    from . import plan as PL
     tx = T.load_json(a.transcript)
-    res = build_short(a.hero, tx, a.out, bgm_path=a.bgm, proxy=not a.no_proxy)
+
+    plan = None
+    if a.plan:
+        plan = PL.load(a.plan)
+    elif a.baseline_plan:
+        plan = PL.baseline_plan(tx)
+    if plan is not None:
+        rep = PL.validate_plan(plan, tx)
+        _print_report(rep)
+        if not rep["ok"]:
+            return 1
+
+    res = build_short(a.hero, tx, a.out, bgm_path=a.bgm, proxy=not a.no_proxy, plan=plan)
     _print_report(res["report"])
     for name, path in res["paths"].items():
         print(f"  {name}: {path}")
@@ -98,7 +112,11 @@ def main(argv=None) -> int:
     b = sub.add_parser("build")
     b.add_argument("--hero", required=True); b.add_argument("--transcript", required=True)
     b.add_argument("--out", default="./vertir-out"); b.add_argument("--bgm", default=None)
-    b.add_argument("--no-proxy", action="store_true"); b.set_defaults(fn=cmd_build)
+    b.add_argument("--no-proxy", action="store_true")
+    b.add_argument("--plan", default=None, help="editorial plan JSON (hook/keep/drop/beats/emphasis)")
+    b.add_argument("--baseline-plan", action="store_true",
+                   help="use the deterministic baseline plan instead of the mechanical cut")
+    b.set_defaults(fn=cmd_build)
 
     v = sub.add_parser("validate"); v.add_argument("ir"); v.set_defaults(fn=cmd_validate)
 

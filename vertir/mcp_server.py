@@ -21,6 +21,7 @@ from . import transcript as T
 from . import validate as V
 from . import render as R
 from . import edit as E
+from . import plan as PL
 
 PROTOCOL = "2025-06-18"
 
@@ -84,6 +85,41 @@ TOOLS: list[dict] = [
                             "atUs": {"type": "integer"}, "endUs": {"type": "integer"},
                             "background": {"type": "string", "enum": ["transparent", "solid", "color", "blurredSource"]},
                             "bgColor": {"type": "string"}}},
+    },
+    {
+        "name": "propose_plan",
+        "description": (
+            "STEP 1 of the editorial loop. Returns the word-level transcript plus the "
+            "Editorial Plan schema and rules. YOU then author the plan: pick the hook "
+            "(the strongest 1-3s, which gets MOVED to the front), the spans to keep and "
+            "drop, punch-in beats every 3-5s, the few words to emphasise, and the outro/CTA. "
+            "All times are SOURCE microseconds. Feed the plan you write to apply_plan."),
+        "inputSchema": {"type": "object", "required": ["transcript"],
+                        "properties": {
+                            "transcript": {"type": "string", "description": "path to a word-level transcript JSON"},
+                            "targetDurationUs": {"type": "integer", "description": "the length you are editing toward"}}},
+    },
+    {
+        "name": "apply_plan",
+        "description": (
+            "STEP 2 of the editorial loop. Apply an Editorial Plan to footage and render. "
+            "Validates the plan fail-closed first (it will refuse an invalid plan rather "
+            "than silently degrade). Pass plan_json inline, or plan as a file path. "
+            "Omit both to use the deterministic baseline plan (no editorial judgement)."),
+        "inputSchema": {"type": "object", "required": ["hero", "transcript", "out_dir"],
+                        "properties": {
+                            "hero": {"type": "string"}, "transcript": {"type": "string"},
+                            "out_dir": {"type": "string"}, "bgm": {"type": "string"},
+                            "plan_json": {"type": "object", "description": "the plan document, inline"},
+                            "plan": {"type": "string", "description": "path to a plan JSON instead"}}},
+    },
+    {
+        "name": "validate_plan",
+        "description": "Check an Editorial Plan against a transcript without applying it. Returns errors/warnings.",
+        "inputSchema": {"type": "object", "required": ["transcript"],
+                        "properties": {
+                            "transcript": {"type": "string"},
+                            "plan_json": {"type": "object"}, "plan": {"type": "string"}}},
     },
     {
         "name": "demo",
@@ -176,10 +212,46 @@ def h_demo(args: dict) -> str:
     return json.dumps({"report": res["report"], "paths": res["paths"]}, ensure_ascii=False, indent=2)
 
 
+def _plan_arg(args: dict, tx: dict) -> dict:
+    """The plan to use: inline, from disk, or the deterministic baseline."""
+    if args.get("plan_json") is not None:
+        return args["plan_json"]
+    if args.get("plan"):
+        return PL.load(args["plan"])
+    return PL.baseline_plan(tx)
+
+
+def h_propose_plan(args: dict) -> str:
+    tx = T.load_json(args["transcript"])
+    brief = PL.plan_brief(tx, target_duration_us=args.get("targetDurationUs"))
+    return json.dumps(brief, ensure_ascii=False, indent=2)
+
+
+def h_validate_plan(args: dict) -> str:
+    tx = T.load_json(args["transcript"])
+    return json.dumps(PL.validate_plan(_plan_arg(args, tx), tx), ensure_ascii=False, indent=2)
+
+
+def h_apply_plan(args: dict) -> str:
+    from .pipeline import build_short
+    tx = T.load_json(args["transcript"])
+    plan = _plan_arg(args, tx)
+    rep = PL.validate_plan(plan, tx)
+    if not rep["ok"]:
+        return json.dumps({"error": "plan validation failed", "report": rep},
+                          ensure_ascii=False, indent=2)
+    res = build_short(args["hero"], tx, args["out_dir"],
+                      bgm_path=args.get("bgm"), plan=plan)
+    return json.dumps({"planReport": rep, "report": res["report"], "paths": res["paths"]},
+                      ensure_ascii=False, indent=2)
+
+
 HANDLERS: dict[str, Callable[[dict], str]] = {
     "ingest": h_ingest, "build_short": h_build_short, "validate": h_validate,
     "render": h_render, "add_broll": h_add_broll, "add_logo": h_add_logo,
     "add_title": h_add_title, "demo": h_demo,
+    "propose_plan": h_propose_plan, "apply_plan": h_apply_plan,
+    "validate_plan": h_validate_plan,
 }
 
 
