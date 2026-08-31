@@ -5,6 +5,7 @@ from vertir import ir as I
 from vertir import edit as E
 from vertir import plan as PL
 from vertir import render as R
+from vertir import anim as A
 from vertir import validate as V
 
 
@@ -224,35 +225,62 @@ class TestApply(unittest.TestCase):
 
 class TestPunchRendering(unittest.TestCase):
     """The keyframes must actually reach the filtergraph — an IR field nothing
-    consumes is a silent no-op, which is worse than an unimplemented feature."""
+    consumes is a silent no-op, which is worse than an unimplemented feature.
+
+    The engine now lives in `vertir.anim`, shared with pan and gain curves.
+    """
 
     def test_no_keyframes_means_no_filter(self):
-        self.assertEqual(R.punch_filter({"keyframes": []}, 1080, 1920), "")
+        self.assertEqual(A.transform_filter({"keyframes": []}, 1080, 1920, 1.0), "")
 
     def test_flat_keyframes_mean_no_filter(self):
         clip = {"keyframes": [{"prop": "scale", "atUs": 0, "v": 1.0},
                               {"prop": "scale", "atUs": 500_000, "v": 1.0}]}
-        self.assertEqual(R.punch_filter(clip, 1080, 1920), "")
+        self.assertEqual(A.transform_filter(clip, 1080, 1920, 1.0), "")
 
     def test_punch_filter_is_emitted(self):
-        clip = {"keyframes": [{"prop": "scale", "atUs": 1_000_000, "v": 1.0, "ease": "linear"},
-                              {"prop": "scale", "atUs": 1_400_000, "v": 1.12, "ease": "easeInOut"}]}
-        f = R.punch_filter(clip, 1080, 1920)
+        clip = {"keyframes": [{"prop": "scale", "atUs": 1_000_000, "v": 1.0, "ease": "easeInOut"},
+                              {"prop": "scale", "atUs": 1_400_000, "v": 1.12, "ease": "linear"}]}
+        f = A.transform_filter(clip, 1080, 1920, 1.0)
         self.assertIn("scale=w=", f)
         self.assertIn("eval=frame", f)
         self.assertIn("crop=1080:1920", f)
         self.assertIn("max(1,", f)          # never crop more than the frame has
+        self.assertNotIn("zoompan", f)      # measured to shake on a subtle push
 
-    def test_expression_holds_before_and_after(self):
+    def test_curve_holds_before_and_after(self):
         clip = {"keyframes": [{"prop": "scale", "atUs": 1_000_000, "v": 1.0, "ease": "linear"},
                               {"prop": "scale", "atUs": 1_400_000, "v": 1.12, "ease": "linear"}]}
-        expr = R.scale_expr(clip)
-        self.assertTrue(expr.startswith("if(lt(t,1.000000),1.0000,"), expr)
-        self.assertTrue(expr.endswith("1.1200))"), expr)
+        ks = clip["keyframes"]
+        # behaviour, not expression shape: flat before the first, flat after the last
+        self.assertAlmostEqual(A.sample(ks, "scale", 0, 1.0), 1.0)
+        self.assertAlmostEqual(A.sample(ks, "scale", 900_000, 1.0), 1.0)
+        self.assertAlmostEqual(A.sample(ks, "scale", 1_200_000, 1.0), 1.06)
+        self.assertAlmostEqual(A.sample(ks, "scale", 9_000_000, 1.0), 1.12)
+        self.assertIsNotNone(A.expr(ks, "scale", default=1.0, tvar="t"))
 
     def test_ignores_non_scale_props(self):
         clip = {"keyframes": [{"prop": "opacity", "atUs": 0, "v": 0.5}]}
-        self.assertIsNone(R.scale_expr(clip))
+        self.assertIsNone(A.expr(clip["keyframes"], "scale", default=1.0))
+
+    def test_planner_easing_leaves_the_starting_keyframe(self):
+        """Spec section 5: `ease` governs the segment LEAVING a keyframe, so the
+        planner's smoothstep has to sit on the one the ramp starts from."""
+        tx = make_transcript()
+        doc = make_ir()
+        plan = PL.new_plan()
+        plan["keep"] = [PL.span(0, 16_000_000)]
+        plan["beats"] = [PL.punch_in(1_200_000, intensity=0.12, ramp_us=400_000)]
+        PL.apply_plan(doc, plan, tx)
+        kfs = [k for k in I.main_track(doc)["clips"][0]["keyframes"]
+               if k["prop"] == "scale"]
+        self.assertEqual(len(kfs), 2)
+        self.assertEqual(kfs[0]["ease"], "easeInOut")
+        # midpoint of a smoothstep sits at the midpoint value; a linear ramp
+        # would too, so check a quarter in, where the two curves differ
+        mid = A.sample(kfs, "scale", kfs[0]["atUs"] + 100_000, 1.0)
+        linear = 1.0 + 0.12 * 0.25
+        self.assertNotAlmostEqual(mid, linear, places=3)
 
 
 if __name__ == "__main__":

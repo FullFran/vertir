@@ -22,6 +22,7 @@ from typing import Any
 
 from . import ir as I
 from . import edit as E
+from . import anim as A
 from . import probe as P
 
 
@@ -66,57 +67,6 @@ def reframe_filter(mode: str, cw: int, ch: int, fx: float, fy: float) -> str:
                 f"pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color=black")
     return (f"scale={cw}:{ch}:force_original_aspect_ratio=increase,"
             f"crop={cw}:{ch}:(iw-{cw})*{fx:.4f}:(ih-{ch})*{fy:.4f}")
-
-
-# ------------------------------------------------------------------ keyframes: scale (punch-in)
-def _us_expr(us: int) -> str:
-    return f"{us / 1_000_000:.6f}"
-
-
-def scale_expr(clip: dict) -> str | None:
-    """Build an ffmpeg time expression for a clip's `scale` keyframes (IR §5).
-
-    `atUs` is clip-local, and the main-track chain applies `setpts=PTS-STARTPTS`,
-    so filter time `t` is clip-local too and the two line up directly.
-    Returns None when the clip has no scale animation worth rendering.
-    """
-    kfs = sorted((k for k in clip.get("keyframes", []) if k.get("prop") == "scale"),
-                 key=lambda k: k.get("atUs", 0))
-    if not kfs or all(abs(float(k.get("v", 1.0)) - 1.0) < 1e-4 for k in kfs):
-        return None
-
-    expr = f"{float(kfs[-1].get('v', 1.0)):.4f}"          # past the last kf: hold
-    for i in range(len(kfs) - 1, 0, -1):
-        a, b = kfs[i - 1], kfs[i]
-        t0, t1 = int(a.get("atUs", 0)), int(b.get("atUs", 0))
-        v0, v1 = float(a.get("v", 1.0)), float(b.get("v", 1.0))
-        ease = b.get("ease", "linear")
-        if t1 <= t0 or ease == "hold":
-            seg = f"{v0:.4f}"
-        else:
-            u = f"(t-{_us_expr(t0)})/{_us_expr(t1 - t0)}"
-            if ease == "easeInOut":                        # smoothstep
-                seg = f"{v0:.4f}+{v1 - v0:.4f}*(({u})*({u})*(3-2*({u})))"
-            else:
-                seg = f"{v0:.4f}+{v1 - v0:.4f}*({u})"
-        expr = f"if(lt(t,{_us_expr(t1)}),{seg},{expr})"
-    return f"if(lt(t,{_us_expr(int(kfs[0].get('atUs', 0)))}),{float(kfs[0].get('v', 1.0)):.4f},{expr})"
-
-
-def punch_filter(clip: dict, cw: int, ch: int) -> str:
-    """Animated zoom for a main clip, as a filter chain suffix ("" if none).
-
-    Uses `scale` with `eval=frame` plus a centred `crop` rather than `zoompan`:
-    zoompan rounds its x/y to integers every frame, which reads as a visible
-    shake on a subtle punch-in. `max(1,...)` guards the crop against ever being
-    asked for more pixels than the scaled frame has.
-    """
-    z = scale_expr(clip)
-    if not z:
-        return ""
-    zc = f"max(1,{z})"
-    return (f",scale=w='trunc({cw}*{zc}/2)*2':h='trunc({ch}*{zc}/2)*2':eval=frame"
-            f",crop={cw}:{ch}:'(iw-ow)/2':'(ih-oh)/2'")
 
 
 # ------------------------------------------------------------------ backend detect
@@ -318,6 +268,9 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
             args += ["-i", tv["path"]]
             title_png_idx[tv["clip"]["id"]] = title_base + n
 
+    # canvas-pixel quantities (pan offsets, margins) follow the proxy canvas
+    scale_f = cw / proj["canvas"]["w"]
+
     fc: list[str] = []
     vlabels, alabels = [], []
     for i, c in enumerate(clips):
@@ -325,14 +278,21 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         s, e = c["source"]["startUs"], c["source"]["endUs"]
         rf = c.get("reframe", {"mode": "cover", "focusX": 0.5, "focusY": 0.4})
         vf = reframe_filter(rf.get("mode", "cover"), cw, ch, rf.get("focusX", 0.5), rf.get("focusY", 0.4))
+        # transform keyframes ride AFTER the reframe (spec section 6: a delta on
+        # top of the base framing). Absent keyframes, the chain is byte-identical
+        # to before -- animation costs nothing when nobody asked for it.
+        anim_vf = A.transform_filter(c, cw, ch, scale_f)
+        # setsar on EVERY clip, animated or not: concat rejects inputs whose
+        # parameters differ, and the animated chain can hand back a SAR of its
+        # own, so animating only some clips would otherwise split the track in two
         fc.append(f"[{idx}:v]trim=start={_us_to_s(s)}:end={_us_to_s(e)},"
-                  f"setpts=PTS-STARTPTS,{vf}{punch_filter(c, cw, ch)},"
-                  f"fps={fps_r},format=yuv420p[v{i}]")
+                  f"setpts=PTS-STARTPTS,{vf},fps={fps_r}{anim_vf},setsar=1,"
+                  f"format=yuv420p[v{i}]")
         has_audio = assets[c["asset"]].get("probe", {}).get("hasAudio", True)
         gain = c.get("audio", {}).get("gainDb", 0.0)
         if has_audio and not c.get("audio", {}).get("mute", False):
             fc.append(f"[{idx}:a]atrim=start={_us_to_s(s)}:end={_us_to_s(e)},"
-                      f"asetpts=PTS-STARTPTS,volume={_db(gain)}[a{i}]")
+                      f"asetpts=PTS-STARTPTS,{A.volume_filter(c, gain)}[a{i}]")
         else:
             fc.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{_us_to_s(e - s)},asetpts=PTS-STARTPTS[a{i}]")
         vlabels.append(f"[v{i}]")
@@ -343,7 +303,6 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
     fc.append("".join(alabels) + f"concat=n={n}:v=0:a=1[speech]")
 
     # video compositing chain: main -> b-roll -> captions -> logo
-    scale_f = cw / proj["canvas"]["w"]
     vin = "[vcat]"
     ass_text = ""
 
@@ -427,11 +386,11 @@ def build_command(ir: dict, out_path: str, ass_path: str | None = None,
         bidx = input_index[bgm["asset"]]
         prog_s = proj.get("durationUs", 0) / 1_000_000
         b_start = bgm.get("source", {}).get("startUs", 0) / 1_000_000  # honor the bgm in-point
-        g = _db(bgm.get("gainDb", -18.0))
+        g = A.volume_filter(bgm, bgm.get("gainDb", -18.0))
         fi = bgm.get("fadeInUs", 0) / 1_000_000
         fo = bgm.get("fadeOutUs", 0) / 1_000_000
         fo_st = max(0.0, prog_s - (fo or 0))
-        fc.append(f"[{bidx}:a]atrim=start={b_start:.6f}:end={b_start + prog_s:.6f},asetpts=PTS-STARTPTS,volume={g},"
+        fc.append(f"[{bidx}:a]atrim=start={b_start:.6f}:end={b_start + prog_s:.6f},asetpts=PTS-STARTPTS,{g},"
                   f"afade=t=in:st=0:d={fi:.3f},afade=t=out:st={fo_st:.3f}:d={fo:.3f},"
                   f"aformat=sample_rates=48000:channel_layouts=stereo[bgm]")
         if bgm.get("duck", {}).get("enabled"):

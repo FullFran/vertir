@@ -135,6 +135,20 @@ class TestDeltaApplication(unittest.TestCase):
         self.assertEqual(I.main_track(out)["clips"][0]["source"]["endUs"],
                          start + 900_000)
 
+    def test_trim_drops_keyframes_left_outside_the_clip(self):
+        """A trim that cuts away the stretch a punch-in lived on takes the
+        punch-in with it, and says so — otherwise the patched IR fails its own
+        validator and the whole reconcile refuses to persist."""
+        clip = I.main_track(self.doc)["clips"][0]
+        clip["keyframes"] = [
+            {"prop": "scale", "atUs": 0, "v": 1.0, "ease": "easeInOut"},
+            {"prop": "scale", "atUs": 5_000_000, "v": 1.15, "ease": "linear"}]
+        out, rep = self._reconcile(["duration_us"], {"duration_us": 900_000})
+        self.assertTrue(rep["ok"], rep)
+        kept = I.main_track(out)["clips"][0].get("keyframes", [])
+        self.assertTrue(all(k["atUs"] <= 900_000 for k in kept), kept)
+        self.assertTrue(any("keyframe" in w for w in rep["warnings"]), rep["warnings"])
+
     def test_trim_accounts_for_speed(self):
         clip = I.main_track(self.doc)["clips"][0]
         clip["speed"] = 2.0

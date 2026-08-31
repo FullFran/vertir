@@ -4,6 +4,7 @@
 """
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from vertir import edit as E
 from vertir import validate as V
 from vertir import transcript as T
 from vertir import render as R
+from vertir import anim as A
 
 
 def sample_ir():
@@ -337,3 +339,306 @@ class TestReviewFixesR3(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- keyframes
+def kf(prop, at_us, v, ease="linear"):
+    return {"prop": prop, "atUs": at_us, "v": v, "ease": ease}
+
+
+def keyframed_ir(keyframes, prop_target="main"):
+    """One 4s main clip carrying `keyframes` (or a bgm clip when targeting bgm)."""
+    doc = sample_ir()
+    doc["assets"]["bgm"] = {"sha256": "b", "path": "/tmp/bgm.m4a", "kind": "audio",
+                            "probe": {"durationUs": 60_000_000, "hasAudio": True}}
+    clip = I.main_clip("hero", 0, 4_000_000)
+    I.main_track(doc)["clips"] = [clip]
+    if prop_target == "main":
+        clip["keyframes"] = keyframes
+    else:
+        I.ensure_track(doc, "bgmTrack", "audio", role="bgm")
+        b = I.bgm_clip("bgm")
+        b["keyframes"] = keyframes
+        I.get_track(doc, "bgmTrack")["clips"] = [b]
+    E.derive(doc)
+    return doc
+
+
+class TestAnimSample(unittest.TestCase):
+    """The pure interpolator — the reference the ffmpeg expression must match."""
+
+    def test_no_keyframes_returns_default(self):
+        self.assertEqual(A.sample([], "scale", 0, default=1.0), 1.0)
+
+    def test_constant_before_first_and_after_last(self):
+        ks = [kf("scale", 1_000_000, 1.0), kf("scale", 2_000_000, 1.5)]
+        self.assertAlmostEqual(A.sample(ks, "scale", 0, default=1.0), 1.0)
+        self.assertAlmostEqual(A.sample(ks, "scale", 9_000_000, default=1.0), 1.5)
+
+    def test_linear_midpoint(self):
+        ks = [kf("scale", 0, 1.0), kf("scale", 2_000_000, 2.0)]
+        self.assertAlmostEqual(A.sample(ks, "scale", 1_000_000, default=1.0), 1.5)
+
+    def test_hold_is_a_step(self):
+        ks = [kf("scale", 0, 1.0, "hold"), kf("scale", 2_000_000, 2.0)]
+        self.assertAlmostEqual(A.sample(ks, "scale", 1_900_000, default=1.0), 1.0)
+        self.assertAlmostEqual(A.sample(ks, "scale", 2_000_000, default=1.0), 2.0)
+
+    def test_ease_in_out_is_smoothstep(self):
+        ks = [kf("scale", 0, 0.0, "easeInOut"), kf("scale", 1_000_000, 1.0)]
+        # smoothstep(0.25) = 0.25^2 * (3 - 2*0.25) = 0.15625
+        self.assertAlmostEqual(A.sample(ks, "scale", 250_000, default=0.0), 0.15625)
+        self.assertAlmostEqual(A.sample(ks, "scale", 500_000, default=0.0), 0.5)
+
+    def test_other_props_are_ignored(self):
+        ks = [kf("x", 0, 100.0), kf("scale", 0, 2.0)]
+        self.assertAlmostEqual(A.sample(ks, "scale", 0, default=1.0), 2.0)
+
+    def test_ties_last_wins(self):
+        ks = [kf("scale", 1_000_000, 1.0), kf("scale", 1_000_000, 3.0)]
+        self.assertAlmostEqual(A.sample(ks, "scale", 1_000_000, default=1.0), 3.0)
+
+
+class TestAnimExpr(unittest.TestCase):
+    def test_none_when_prop_absent(self):
+        self.assertIsNone(A.expr([kf("x", 0, 1.0)], "scale"))
+
+    def test_none_when_curve_is_the_identity(self):
+        # constant AND equal to the default: nothing to render
+        self.assertIsNone(A.expr([kf("scale", 0, 1.0), kf("scale", 2_000_000, 1.0)],
+                                 "scale", default=1.0))
+
+    def test_constant_non_default_still_emits(self):
+        # a flat 1.3 is a static 1.3x push, not a no-op
+        self.assertIsNotNone(A.expr([kf("scale", 0, 1.3), kf("scale", 2_000_000, 1.3)],
+                                    "scale", default=1.0))
+
+    def test_linear_expression_is_clamped(self):
+        e = A.expr([kf("scale", 0, 1.0), kf("scale", 2_000_000, 1.5)], "scale")
+        self.assertIn("clip(", e)
+        self.assertNotIn(";", e)   # would break the filtergraph
+        self.assertNotIn('"', e)
+
+    def test_hold_segment_has_no_interpolation_term(self):
+        e = A.expr([kf("scale", 0, 1.0, "hold"), kf("scale", 2_000_000, 2.0)], "scale")
+        self.assertIn("if(", e)
+
+    def test_uses_given_time_variable(self):
+        e = A.expr([kf("scale", 0, 1.0), kf("scale", 1_000_000, 2.0)], "scale", tvar="in_time")
+        self.assertIn("in_time", e)
+        self.assertNotIn("(t-", e)
+
+
+class TestKeyframeValidation(unittest.TestCase):
+    def test_valid_keyframes_pass(self):
+        doc = keyframed_ir([kf("scale", 0, 1.0), kf("scale", 2_000_000, 1.12, "easeInOut")])
+        rep = V.validate(doc)
+        self.assertTrue(rep["ok"], rep)
+
+    def test_unknown_prop_is_an_error(self):
+        doc = keyframed_ir([kf("rotDeg", 0, 10.0)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-prop" for e in rep["errors"]), rep)
+
+    def test_unknown_ease_is_an_error(self):
+        doc = keyframed_ir([kf("scale", 0, 1.0, "spring"), kf("scale", 1_000_000, 1.2)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-ease" for e in rep["errors"]), rep)
+
+    def test_atus_beyond_clip_duration_is_an_error(self):
+        # clip is 4s; a keyframe at 9s can never fire
+        doc = keyframed_ir([kf("scale", 0, 1.0), kf("scale", 9_000_000, 1.2)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-range" for e in rep["errors"]), rep)
+
+    def test_negative_atus_is_an_error(self):
+        doc = keyframed_ir([kf("scale", -1, 1.0)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-range" for e in rep["errors"]), rep)
+
+    def test_non_monotonic_atus_is_an_error(self):
+        doc = keyframed_ir([kf("scale", 2_000_000, 1.0), kf("scale", 1_000_000, 1.2)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-order" for e in rep["errors"]), rep)
+
+    def test_non_numeric_value_is_an_error(self):
+        doc = keyframed_ir([kf("scale", 0, "big")])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-value" for e in rep["errors"]), rep)
+
+    def test_scale_below_reframe_is_an_error(self):
+        # spec section 6: a scale keyframe may never drop below the reframe base,
+        # that is what produces black bars
+        doc = keyframed_ir([kf("scale", 0, 1.0), kf("scale", 1_000_000, 0.8)])
+        rep = V.validate(doc)
+        self.assertTrue(any(e["code"] == "kf-scale-under" for e in rep["errors"]), rep)
+
+    def test_opacity_keyframes_warn_as_unrendered(self):
+        doc = keyframed_ir([kf("opacity", 0, 1.0), kf("opacity", 1_000_000, 0.5)])
+        rep = V.validate(doc)
+        self.assertTrue(rep["ok"], rep)
+        self.assertTrue(any(w["code"] == "kf-unrendered" for w in rep["warnings"]), rep)
+
+    def test_gain_keyframes_on_bgm_pass(self):
+        doc = keyframed_ir([kf("gainDb", 0, -18.0), kf("gainDb", 1_000_000, -30.0)],
+                           prop_target="bgm")
+        rep = V.validate(doc)
+        self.assertTrue(rep["ok"], rep)
+        self.assertFalse(any(w["code"] == "kf-unrendered" for w in rep["warnings"]), rep)
+
+    def test_keyframes_on_overlay_warn_as_unrendered(self):
+        doc = overlay_ir()
+        E.add_broll(doc, "broll1", 1_200_000, 1_800_000)
+        for t in doc["tracks"]:
+            if t.get("role") == "broll":
+                t["clips"][0]["keyframes"] = [kf("scale", 0, 1.0), kf("scale", 500_000, 1.2)]
+        rep = V.validate(doc)
+        self.assertTrue(any(w["code"] == "kf-unrendered" for w in rep["warnings"]), rep)
+
+
+class TestKeyframeRender(unittest.TestCase):
+    def test_no_keyframes_leaves_the_chain_untouched(self):
+        doc = keyframed_ir([])
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        self.assertNotIn("eval=frame", fc)
+        self.assertNotIn("zoompan", fc)   # the shaky filter must not come back
+
+    def test_scale_keyframes_magnify_then_crop_back_to_canvas(self):
+        doc = keyframed_ir([kf("scale", 0, 1.0), kf("scale", 2_000_000, 1.12, "easeInOut")])
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        self.assertIn("eval=frame", fc)
+        self.assertIn("trunc(1080*", fc)
+        self.assertIn("crop=1080:1920:", fc)   # the canvas comes back out intact
+        self.assertNotIn("zoompan", fc)
+
+    def test_pan_keyframes_move_the_crop_window(self):
+        doc = keyframed_ir([kf("scale", 0, 1.2), kf("x", 0, 0.0), kf("x", 2_000_000, 60.0)])
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        self.assertIn("crop=1080:1920:", fc)
+        self.assertIn("60.000", fc)
+
+    def test_proxy_scales_pixel_offsets(self):
+        doc = keyframed_ir([kf("x", 0, 0.0), kf("x", 2_000_000, 100.0)])
+        full = R.build_command(doc, "/tmp/o.mp4")["args"]
+        half = R.build_command(doc, "/tmp/o.mp4", proxy=True)["args"]
+        full = full[full.index("-filter_complex") + 1]
+        half = half[half.index("-filter_complex") + 1]
+        self.assertIn("trunc(1080*", full)
+        self.assertIn("trunc(540*", half)
+        self.assertIn("100.000", full)
+        self.assertIn("50.000", half)   # pixel offsets follow the proxy canvas
+
+    def test_gain_keyframes_emit_per_frame_volume(self):
+        doc = keyframed_ir([kf("gainDb", 0, -18.0), kf("gainDb", 1_000_000, -30.0)],
+                           prop_target="bgm")
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        self.assertIn("eval=frame", fc)
+
+    def test_opacity_keyframes_do_not_reach_the_filtergraph(self):
+        doc = keyframed_ir([kf("opacity", 0, 1.0), kf("opacity", 1_000_000, 0.4)])
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        self.assertNotIn("eval=frame", fc)
+
+    def test_pan_wider_than_its_headroom_warns(self):
+        # crop silently clamps a pan the zoom leaves no room for, so say so
+        doc = keyframed_ir([kf("scale", 0, 1.02), kf("x", 0, 0.0),
+                            kf("x", 1_000_000, 400.0)])
+        rep = V.validate(doc)
+        self.assertTrue(any(w["code"] == "kf-pan-clamped" for w in rep["warnings"]), rep)
+
+    def test_pan_inside_its_headroom_does_not_warn(self):
+        doc = keyframed_ir([kf("scale", 0, 1.30), kf("x", 0, 0.0),
+                            kf("x", 1_000_000, 40.0)])
+        rep = V.validate(doc)
+        self.assertFalse(any(w["code"] == "kf-pan-clamped" for w in rep["warnings"]), rep)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                     "ffmpeg/ffprobe not on PATH")
+class TestKeyframeRealRender(unittest.TestCase):
+    """The filtergraph has to survive a real ffmpeg, not just a string assertion."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="vertir-kf-")
+        self.src = os.path.join(self.tmp, "src.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=red:s=1280x720:d=4:r=30,"
+             "drawgrid=w=64:h=36:t=3:c=white",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+             "-shortest", self.src], check=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _render(self, keyframes):
+        doc = sample_ir()
+        doc["assets"]["hero"] = {
+            "sha256": "x", "path": self.src, "kind": "video",
+            "probe": {"durationUs": 4_000_000, "w": 1280, "h": 720,
+                      "fps": {"num": 30, "den": 1}, "hasAudio": True},
+        }
+        clip = I.main_clip("hero", 0, 3_000_000)
+        clip["keyframes"] = keyframes
+        I.main_track(doc)["clips"] = [clip]
+        E.derive(doc)
+        self.assertTrue(V.validate(doc)["ok"], V.validate(doc))
+        out = os.path.join(self.tmp, f"out{len(keyframes)}{keyframes and keyframes[0]['ease']}.mp4")
+        R.render(doc, out, proxy=True)
+        return out
+
+    def _frame(self, video, at_s, name):
+        png = os.path.join(self.tmp, name)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-ss", str(at_s), "-i", video, "-frames:v", "1", png],
+                       check=True)
+        with open(png, "rb") as fh:
+            return fh.read()
+
+    def test_zoom_keyframes_actually_move_the_frame(self):
+        out = self._render([kf("scale", 0, 1.0), kf("scale", 2_500_000, 1.4)])
+        self.assertTrue(os.path.exists(out))
+        self.assertNotEqual(self._frame(out, 0.1, "a.png"),
+                            self._frame(out, 2.4, "b.png"),
+                            "zoom keyframes rendered a static frame")
+
+    def test_hold_keyframes_do_not_move_the_frame(self):
+        # linear would have zoomed between 0.5s and 2.0s; hold must not
+        out = self._render([kf("scale", 0, 1.2, "hold"), kf("scale", 2_500_000, 1.6)])
+        self.assertEqual(self._frame(out, 0.5, "c.png"),
+                         self._frame(out, 2.0, "d.png"),
+                         "a held curve should render identical frames")
+
+    def test_mixed_keyframed_and_plain_clips_concat(self):
+        """concat demands identical parameters on every input. Animating only
+        SOME clips must not leave the track with two different SARs."""
+        doc = sample_ir()
+        doc["assets"]["hero"] = {
+            "sha256": "x", "path": self.src, "kind": "video",
+            "probe": {"durationUs": 4_000_000, "w": 1280, "h": 720,
+                      "fps": {"num": 30, "den": 1}, "hasAudio": True},
+        }
+        a = I.main_clip("hero", 0, 1_500_000)
+        a["keyframes"] = [kf("scale", 0, 1.0), kf("scale", 1_400_000, 1.3)]
+        b = I.main_clip("hero", 2_000_000, 3_500_000)   # no keyframes at all
+        I.main_track(doc)["clips"] = [a, b]
+        E.derive(doc)
+        self.assertTrue(V.validate(doc)["ok"], V.validate(doc))
+        out = os.path.join(self.tmp, "mixed.mp4")
+        R.render(doc, out, proxy=True)
+        self.assertTrue(os.path.getsize(out) > 0)
+
+    def test_every_main_clip_declares_a_square_sar(self):
+        doc = keyframed_ir([kf("scale", 0, 1.0), kf("scale", 2_000_000, 1.2)])
+        fc = R.build_command(doc, "/tmp/o.mp4")["args"]
+        fc = fc[fc.index("-filter_complex") + 1]
+        chains = [c for c in fc.split(";") if "concat=" not in c and "]trim=" in c]
+        self.assertTrue(chains)
+        for c in chains:
+            self.assertIn("setsar=1", c, f"main clip chain without setsar: {c}")

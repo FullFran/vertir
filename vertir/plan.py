@@ -332,8 +332,11 @@ def _apply_beats(ir: dict, plan: dict) -> int:
             continue
         k = float(b.get("intensity", DEFAULT_PUNCH_INTENSITY))
         kfs = clip.setdefault("keyframes", [])
-        kfs.append({"prop": "scale", "atUs": local, "v": 1.0, "ease": "linear"})
-        kfs.append({"prop": "scale", "atUs": end, "v": round(1.0 + k, 4), "ease": "easeInOut"})
+        # `ease` governs the segment LEAVING a keyframe (spec section 5: "hold =
+        # mantiene hasta el proximo kf"), so the smoothstep goes on the keyframe
+        # the ramp starts from, not the one it arrives at
+        kfs.append({"prop": "scale", "atUs": local, "v": 1.0, "ease": "easeInOut"})
+        kfs.append({"prop": "scale", "atUs": end, "v": round(1.0 + k, 4), "ease": "linear"})
         kfs.sort(key=lambda kf: (kf["prop"], kf["atUs"]))
         applied += 1
     return applied
