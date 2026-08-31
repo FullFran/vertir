@@ -187,6 +187,18 @@ Word-highlight. **Anclado a source** (viene del transcript, que ya tiene timesta
 - **`ease`:** `linear | easeInOut | hold`. **Sin `spring` en v1** (era lossy a CapCut y no-determinista). `hold` = escalón (mantiene hasta el próximo kf).
 - **Precisión de floats:** `scale`/`opacity` a 1e-4; `gainDb` a 0.1 dB. `atUs` monótono no-decreciente; empates → gana el último (o usar `hold`).
 
+**Estado del motor (v1).** El validador comprueba `prop`, `ease`, rango de `atUs` contra la duración del clip, monotonía por prop, tipo de `v`, y que ningún `scale` baje de 1.0 (§6). El renderer ejecuta:
+
+| prop | main track | audio | overlays (b-roll / logo / placas) |
+|---|---|---|---|
+| `scale`, `x`, `y` | ✅ `zoompan` | — | ⚠️ no renderizado |
+| `gainDb` | ✅ `volume:eval=frame` | ✅ | ⚠️ no renderizado |
+| `opacity` | ⚠️ no renderizado | — | ⚠️ no renderizado |
+
+Lo no renderizado **no se descarta en silencio**: el validador emite el warning `kf-unrendered` nombrando el clip y las props. Un IR que valida sin warnings es un IR que se renderiza entero.
+
+La curva se compila a una **expresión cerrada de FFmpeg** en vez de a un script `sendcmd`: los keyframes son dispersos y su easing está definido, así que interpolar en la expresión es exacto, no necesita fichero temporal y no depende del orden de llegada de los comandos. `crop` **no** puede animar `w`/`h` (esas expresiones se evalúan una sola vez, en configuración), por eso el `scale` animado va sobre `zoompan`. Referencia en Python de la misma semántica: `vertir/anim.py:sample()`.
+
 ---
 
 ## 6. Stack de transform (orden definido — arreglo #3)

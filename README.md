@@ -59,7 +59,8 @@ vertir/
   ir.py          # el contrato (builders + io)          validate.py  # validador fail-closed
   probe.py       # ingest (ffprobe) + sha256            render.py    # FFmpeg + ASS word-highlight
   transcript.py  # transcript + loaders (whisper.cpp)   pipeline.py  # ensamblado core
-  edit.py        # cortes, cut-map (source→program)     cli.py / mcp_server.py / web/
+  edit.py        # cortes, cut-map (source→program)     anim.py      # keyframes: sample() + expr()
+                                                        cli.py / mcp_server.py / web/
 ```
 
 ## Roadmap
@@ -67,6 +68,7 @@ vertir/
 - [x] **Rebanada 1 — core**: filler-cut + reframe 9:16 + captions word-highlight + validador + render + MCP + web-tweaker
 - [x] **Rebanada 2** — b-roll (cortes source-anchored) + logo/marca de agua (overlay program-anchored)
 - [x] **Rebanada 3** — placas intro/outro (hook cards) + ducking de música (side-chain) + perfil de loudness por plataforma
+- [x] **Rebanada 3.5 — keyframes**: `transform` animado (`scale`/`x`/`y`) vía `zoompan` con expresión cerrada, `gainDb` animado vía `volume:eval=frame`, y reglas de validación §5/§6. Antes el IR declaraba keyframes que el motor ignoraba en silencio; ahora se renderizan, y lo que aún no (props sobre overlays, `opacity`) sale como warning `kf-unrendered`.
 - [ ] **Rebanada 4** — export a draft de CapCut (feature secundaria, desktop)
 
 ## Contribuir
