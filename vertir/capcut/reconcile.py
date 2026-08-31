@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import edit as E
+from .. import anim as A
 from .. import ir as I
 from .. import validate as V
 from . import bridge
@@ -117,6 +118,13 @@ def _apply_segment_delta(ir: dict, clip: dict, track: dict, fields: list[str],
             speed = float(clip.get("speed", 1.0)) or 1.0
             src["endUs"] = src["startUs"] + int(round(new_dur * speed))
             applied.append("duration")
+            # a shorter clip cannot keep keyframes past its new end: they would
+            # fail validation and the whole reconcile would refuse to persist
+            gone = A.drop_beyond(clip, new_dur)
+            if gone:
+                report["warnings"].append(
+                    f"clip {clip['id']}: dropped {gone} keyframe(s) left outside "
+                    "the trimmed clip")
 
         elif field == "start_us":
             if track.get("kind") == "audio" or clip.get("anchor") == "program":

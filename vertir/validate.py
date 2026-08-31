@@ -9,6 +9,7 @@ from typing import Any
 
 from . import ir as I
 from . import edit as E
+from . import anim as A
 
 SUPPORTED_MAJOR = 1
 
@@ -33,6 +34,81 @@ class Report:
 
 def _is_int(x: Any) -> bool:
     return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _clip_dur_us(clip: dict, prog_us: int) -> int | None:
+    """A clip's own length in program time, or None when it cannot be derived."""
+    tl = clip.get("timeline")
+    if tl and _is_int(tl.get("startUs")) and _is_int(tl.get("endUs")):
+        return tl["endUs"] - tl["startUs"]
+    at, end = clip.get("atUs"), clip.get("endUs")
+    if _is_int(at) and _is_int(end):
+        return max(0, prog_us - at) if end == I.WHOLE_PROGRAM else end - at
+    sa, se = clip.get("sourceAtUs"), clip.get("sourceEndUs")
+    if _is_int(sa) and _is_int(se):
+        return se - sa
+    return None
+
+
+def _check_keyframes(r: "Report", clip: dict, ctx: str, dur_us: int | None,
+                     where: str, canvas_w: int = 1080) -> None:
+    """Spec section 5. A keyframe the engine cannot execute is reported, never
+    dropped in silence: an IR that validates has to be an IR that renders."""
+    ks = clip.get("keyframes")
+    if not ks:
+        return
+    cid = clip.get("id", where)
+    if not isinstance(ks, list):
+        r.err("kf-shape", f"clip {cid} keyframes must be a list", cid)
+        return
+    last_at: dict[str, int] = {}
+    for n, k in enumerate(ks):
+        if not isinstance(k, dict):
+            r.err("kf-shape", f"clip {cid} keyframe {n} is not an object", cid)
+            continue
+        prop = k.get("prop")
+        if prop not in I.KEYFRAME_PROPS:
+            r.err("kf-prop", f"clip {cid} keyframe {n} has unknown prop {prop!r}", cid)
+            continue
+        v = k.get("v")
+        if not _is_num(v):
+            r.err("kf-value", f"clip {cid} keyframe {n} ({prop}) value is not a number", cid)
+        elif prop == "scale" and v < 1.0:
+            # spec section 6: transform is a delta ON TOP of the reframe; going
+            # under it uncovers the canvas, which is black bars
+            r.err("kf-scale-under",
+                  f"clip {cid} keyframe {n} scale {v} drops below the reframe base", cid)
+        at = k.get("atUs")
+        if not _is_int(at):
+            r.err("kf-range", f"clip {cid} keyframe {n} ({prop}) atUs must be an integer", cid)
+        else:
+            if at < 0 or (dur_us is not None and at > dur_us):
+                r.err("kf-range",
+                      f"clip {cid} keyframe {n} ({prop}) atUs {at} outside [0, {dur_us}]", cid)
+            if prop in last_at and at < last_at[prop]:
+                r.err("kf-order",
+                      f"clip {cid} keyframe {n} ({prop}) atUs {at} goes back in time", cid)
+            last_at[prop] = at
+        ease = k.get("ease", "linear")
+        if ease not in I.EASES:
+            r.err("kf-ease", f"clip {cid} keyframe {n} ({prop}) unknown ease {ease!r}", cid)
+    if ctx == "main":
+        pan, min_scale = A.pan_headroom(clip)
+        # crop can only travel across what the magnification exposed
+        headroom = canvas_w * (min_scale - 1.0) / 2.0
+        if pan > headroom + 0.5:
+            r.warn("kf-pan-clamped",
+                   f"clip {cid} pans {pan:.0f}px but scale {min_scale} leaves only "
+                   f"{headroom:.0f}px of headroom; the move will be clamped", cid)
+    unrendered = A.props_used(ks) - A.rendered_props(ctx)
+    if unrendered:
+        r.warn("kf-unrendered",
+               f"clip {cid} keyframes on {sorted(unrendered)} are valid IR but are "
+               "not rendered in v1", cid)
 
 
 def _interval_ok(rng: dict) -> bool:
@@ -206,6 +282,19 @@ def validate(ir: dict) -> dict:
             bt = c.get("background", {}).get("type", "transparent")
             if bt not in ("transparent", "solid", "color", "blurredSource"):
                 r.warn("title-bg", f"title {c.get('id')} unknown background {bt!r}", c.get("id"))
+
+    # keyframes, per clip, with the context that decides what the engine honors
+    prog_us = ir.get("project", {}).get("durationUs", 0)
+    for t in ir.get("tracks", []):
+        if t.get("kind") == "video" and t.get("role") == "main":
+            ctx = "main"
+        elif t.get("kind") == "audio":
+            ctx = "audio"
+        else:
+            ctx = "overlay"
+        for c in t.get("clips", []):
+            _check_keyframes(r, c, ctx, _clip_dur_us(c, prog_us), t.get("id", ""),
+                             ir.get("project", {}).get("canvas", {}).get("w", 1080))
 
     tclips = sorted(
         (c for t in ir.get("tracks", []) if t.get("kind") == "title"
