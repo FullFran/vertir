@@ -130,7 +130,7 @@ vertir/
   probe.py       # ingest (ffprobe) + sha256            render.py    # FFmpeg + ASS word-highlight
   transcript.py  # transcript + loaders (whisper.cpp)   pipeline.py  # ensamblado core
   edit.py        # cortes, cut-map (source→program)     plan.py      # plan editorial (juicio del LLM)
-  capcut/        # adaptador a CapCut (bridge/spec/provenance)
+  anim.py        # keyframes: sample() + expr()         capcut/      # adaptador a CapCut
   cli.py / mcp_server.py / web/
 ```
 
@@ -139,6 +139,7 @@ vertir/
 - [x] **Rebanada 1 — core**: filler-cut + reframe 9:16 + captions word-highlight + validador + render + MCP + web-tweaker
 - [x] **Rebanada 2** — b-roll (cortes source-anchored) + logo/marca de agua (overlay program-anchored)
 - [x] **Rebanada 3** — placas intro/outro (hook cards) + ducking de música (side-chain) + perfil de loudness por plataforma
+- [x] **Rebanada 3.5 — keyframes**: `transform` animado (`scale`/`x`/`y`) y `gainDb`, con expresión cerrada de FFmpeg. El zoom va sobre `scale:eval=frame` + `crop` (medido: `zoompan` redondea x/y a enteros y tiembla ~2 px en un punch-in sutil). Reglas de validación §5/§6; lo que el motor aún no ejecuta sale como warning `kf-unrendered` en vez de descartarse en silencio.
 - [x] **Rebanada 5 — planner editorial**: el LLM decide el corte (hook, drops, beats de punch-in, énfasis, placas) en vez de sólo ejecutarlo
 - [x] **Rebanada 4 — export a CapCut**: el IR se transpila a un draft de CapCut/JianYing vía `capcut-cli`, con informe de pérdidas explícito
 - [x] **Rebanada 6 — reconcile**: las ediciones hechas a mano en CapCut vuelven al IR **parcheando**, nunca re-parseando
